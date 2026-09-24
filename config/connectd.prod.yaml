@@ -1,0 +1,44 @@
+version: "1.0"
+daemon:
+  host: "0.0.0.0"
+  port: 8790
+  database_url: "sqlite:////data/connectd.db"
+  signing_key_path: "/run/secrets/connectd_signing_key"
+  cedar_policy_path: "/etc/connectd/policies.cedar"
+  operator_token_env: "CONNECTD_OPERATOR_TOKEN"
+router:
+  provider: "laya"
+  base_url: "http://laya-router:8000"
+  min_confidence: 0.90
+  api_key_env: "TYPESAFE_API_KEY"
+  tree_registry_path: "/etc/connectd/oag_tree_registry.json"
+worker_model:
+  base_url: "http://model-api:8090"
+  model_id: null  # Set to the model served by the configured model-api image.
+  uses_proxy: true
+model_api:
+  engine_type: "openai_compatible"
+  container_image: null
+  port: 8090
+task_defaults:
+  default_privacy_class: "repo_sensitive"
+spend:
+  reset_timezone: "UTC"
+default_execution_profile: "prod_secure"
+secret_sensitive_allowed_node_ids: []
+execution_profiles:
+  dev_fast:
+    grant_mode: "auto_grant"
+    memory_authority: "session_auto"
+    worktree_sandbox: true
+    worker_runtime: "subprocess"
+  balanced:
+    grant_mode: "risk_tiered"
+    memory_authority: "hybrid"
+    worktree_sandbox: true
+    worker_runtime: "subprocess"
+  prod_secure:
+    grant_mode: "strict_ed25519"
+    memory_authority: "human_gated"
+    worktree_sandbox: true
+    worker_runtime: "docker"

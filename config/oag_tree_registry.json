@@ -1,0 +1,30 @@
+{
+  "version": "1.0",
+  "trees": {
+    "tool_routing": {
+      "root_node": "domain",
+      "nodes": {
+        "domain": {
+          "hop": 1,
+          "options": [
+            {"id": "code", "label": "Codebase", "next_node": "code_action"},
+            {"id": "database", "label": "Database", "next_node": "db_action"}
+          ]
+        },
+        "code_action": {
+          "hop": 2,
+          "options": [
+            {"id": "inspect", "label": "Inspect repository", "next_node": "LEAF_RESOLVED", "resolved_tool_id": "workbench"},
+            {"id": "patch", "label": "Patch worktree", "next_node": "LEAF_RESOLVED", "resolved_tool_id": "workbench"}
+          ]
+        },
+        "db_action": {
+          "hop": 2,
+          "options": [
+            {"id": "query", "label": "Read data", "next_node": "LEAF_RESOLVED", "resolved_tool_id": "db_read"}
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,11 @@
+FROM python:3.12-slim
+WORKDIR /opt/connectd
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN pip install --no-cache-dir '.[api,postgres]' \
+    && useradd --system --uid 10001 --create-home connectd \
+    && mkdir /data /etc/connectd \
+    && chown connectd:connectd /data
+COPY config/connectd.prod.yaml config/policies.cedar config/oag_tree_registry.json /etc/connectd/
+USER connectd
+CMD ["connectd", "--config", "/etc/connectd/connectd.prod.yaml", "serve"]

@@ -1,0 +1,40 @@
+"""Small local operator workspace served by the daemon."""
+
+CONTROL_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>connectd control</title><style>
+:root{font-family:system-ui,sans-serif;color:#17211e;background:#f4f7f4}
+body{max-width:1100px;margin:auto;padding:24px}h1{margin:0 0 4px;font-size:2rem}h2{margin-top:0}
+.sub{color:#53645c;margin-bottom:24px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.card{background:white;border:1px solid #d6e0d8;border-radius:14px;padding:20px;margin-bottom:20px;box-shadow:0 3px 12px #183b2510}
+label{display:block;font-size:.82rem;font-weight:650;margin:12px 0 4px}input,select,textarea,button{font:inherit}
+input,select,textarea{box-sizing:border-box;width:100%;padding:10px;border:1px solid #bbc9bf;border-radius:8px;background:white}
+button{border:0;border-radius:8px;background:#196d42;color:white;padding:10px 16px;cursor:pointer;margin-top:12px}
+button.secondary{background:#e4eee6;color:#174b30;margin:4px}.row{display:flex;gap:8px;align-items:end}
+.row>*{flex:1}.item{border-top:1px solid #e5ebe6;padding:10px 0}.item button{margin:0}
+.muted{color:#637269;font-size:.85rem}.error{color:#a12626}.ok{color:#176b3e}
+pre{white-space:pre-wrap;word-break:break-word;font-size:.82rem;background:#f5f8f6;padding:12px;border-radius:8px;max-height:300px;overflow:auto}
+@media(max-width:720px){.grid{grid-template-columns:1fr}.row{display:block}}
+</style></head><body>
+<h1>connectd control</h1><div class="sub">Tasks, trusted memory, and verified execution history</div>
+<section class="card"><div class="row"><div><label for="token">Operator token</label><input id="token" type="password" autocomplete="off" placeholder="Paste your operator bearer token"></div><div><button id="load">Load workspace</button></div></div><p class="muted">The token stays in this browser tab's memory and is not saved.</p><div id="status"></div></section>
+<div class="grid"><section class="card"><h2>New task</h2><form id="new-task">
+<label for="title">Title</label><input id="title" required maxlength="500">
+<label for="privacy">Privacy</label><select id="privacy"><option>public</option><option>low_sensitive</option><option>repo_sensitive</option><option>secret_sensitive</option></select>
+<label for="scope">Memory scope</label><input id="scope" required placeholder="repo:my-project">
+<label for="profile">Execution profile</label><select id="profile"><option>balanced</option><option>dev_fast</option><option>prod_secure</option></select>
+<button type="submit">Create task</button></form></section>
+<section class="card"><h2>Tasks</h2><div id="tasks" class="muted">Load workspace to see tasks.</div></section></div>
+<div class="grid"><section class="card"><h2>Audit timeline</h2><div id="audit" class="muted">Select a task.</div></section>
+<section class="card"><h2>Memory candidates</h2><div id="candidates" class="muted">Load workspace to review candidates.</div></section></div>
+<script>
+let token='';const byId=id=>document.getElementById(id);
+async function api(path,options={}){const r=await fetch(path,{...options,headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json',...(options.headers||{})}});if(!r.ok)throw Error((await r.text()).slice(0,300));return r.json()}
+function status(message,error=false){byId('status').textContent=message;byId('status').className=error?'error':'ok'}
+function element(tag,text){const node=document.createElement(tag);node.textContent=text;return node}
+async function load(){token=byId('token').value.trim();if(!token){status('Enter an operator token.',true);return}try{const [tasks,candidates]=await Promise.all([api('/api/v1/tasks'),api('/api/v1/memory/candidates')]);renderTasks(tasks);renderCandidates(candidates);status('Workspace loaded.')}catch(e){status(e.message,true)}}
+function renderTasks(tasks){const root=byId('tasks');root.replaceChildren();if(!tasks.length){root.textContent='No tasks yet.';return}for(const task of tasks){const item=element('div',task.title+' · '+task.privacy_class+' · '+task.status);item.className='item';const btn=element('button','View audit');btn.className='secondary';btn.onclick=()=>showAudit(task.task_id);item.append(btn);root.append(item)}}
+function renderCandidates(items){const root=byId('candidates');root.replaceChildren();if(!items.length){root.textContent='No pending candidates.';return}for(const claim of items){const item=element('div',claim.claim_text);item.className='item';const btn=element('button','Promote');btn.className='secondary';btn.onclick=async()=>{try{await api('/api/v1/memory/claims/'+encodeURIComponent(claim.claim_id)+'/promote',{method:'POST'});load()}catch(e){status(e.message,true)}};item.append(btn);root.append(item)}}
+async function showAudit(id){try{const audit=await api('/api/v1/tasks/'+encodeURIComponent(id)+'/audit');byId('audit').replaceChildren(element('pre',JSON.stringify(audit,null,2)))}catch(e){status(e.message,true)}}
+byId('load').onclick=load;byId('new-task').onsubmit=async e=>{e.preventDefault();try{const result=await api('/api/v1/tasks',{method:'POST',body:JSON.stringify({title:byId('title').value,privacy_class:byId('privacy').value,memory_scope:byId('scope').value,execution_profile:byId('profile').value})});status('Created task '+result.task_id);byId('title').value='';await load()}catch(error){status(error.message,true)}};
+</script></body></html>"""

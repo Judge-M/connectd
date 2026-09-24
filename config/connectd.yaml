@@ -1,0 +1,45 @@
+version: "1.0"
+daemon:
+  host: "127.0.0.1"
+  port: 8790
+  database_url: "sqlite:///connectd.db"
+  # Set a persistent Ed25519 private key path before running a daemon.
+  signing_key_path: null
+  cedar_policy_path: "config/policies.cedar"
+  operator_token_env: "CONNECTD_OPERATOR_TOKEN"
+router:
+  provider: "laya"
+  base_url: "http://127.0.0.1:8000"
+  min_confidence: 0.90
+  api_key_env: "TYPESAFE_API_KEY"
+  tree_registry_path: "config/oag_tree_registry.json"
+worker_model:
+  base_url: null  # Configure a capable OpenAI-compatible endpoint.
+  model_id: null
+  uses_proxy: false
+model_api:
+  engine_type: "openai_compatible"
+  container_image: null
+  port: 8090
+task_defaults:
+  default_privacy_class: "repo_sensitive"
+spend:
+  reset_timezone: "UTC"
+default_execution_profile: "balanced"
+secret_sensitive_allowed_node_ids: []
+execution_profiles:
+  dev_fast:
+    grant_mode: "auto_grant"
+    memory_authority: "session_auto"
+    worktree_sandbox: true
+    worker_runtime: "subprocess"
+  balanced:
+    grant_mode: "risk_tiered"
+    memory_authority: "hybrid"
+    worktree_sandbox: true
+    worker_runtime: "subprocess"
+  prod_secure:
+    grant_mode: "strict_ed25519"
+    memory_authority: "human_gated"
+    worktree_sandbox: true
+    worker_runtime: "docker"

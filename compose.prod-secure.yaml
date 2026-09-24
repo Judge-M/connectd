@@ -1,0 +1,85 @@
+services:
+  connectd-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.daemon
+    hostname: connectd-gateway
+    networks:
+      isolated:
+        aliases: [connectd-gateway]
+      management: {}
+    ports:
+      - "127.0.0.1:8790:8790"
+    volumes:
+      - connectd_data:/data
+    secrets:
+      - connectd_signing_key
+      - connectd_operator_token
+    environment:
+      CONNECTD_OPERATOR_TOKEN_FILE: /run/secrets/connectd_operator_token
+      CONNECTD_WORKER_MODEL_ID: ${CONNECTD_WORKER_MODEL_ID:?set CONNECTD_WORKER_MODEL_ID}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp
+
+  model-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.daemon
+    hostname: model-api
+    networks:
+      isolated:
+        aliases: [model-api]
+      inference: {}
+      management: {}
+    volumes:
+      - connectd_data:/data
+      - ${CONNECTD_NODE_CERT_DIRECTORY:-./certs}:/etc/connectd/certs:ro
+    secrets:
+      - connectd_operator_token
+    environment:
+      CONNECTD_OPERATOR_TOKEN_FILE: /run/secrets/connectd_operator_token
+    command: ["connectd", "--config", "/etc/connectd/connectd.prod.yaml", "model-proxy"]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp
+
+  model-engine:
+    image: ${CONNECTD_MODEL_ENGINE_IMAGE:?set CONNECTD_MODEL_ENGINE_IMAGE}
+    networks:
+      inference: {}
+
+  laya-router:
+    build:
+      context: .
+      dockerfile: Dockerfile.router
+    networks:
+      management: {}
+    environment:
+      LAYA_PRELOAD: "1"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+
+networks:
+  isolated:
+    name: connectd-isolated
+    internal: true
+  inference:
+    internal: true
+  management: {}
+
+volumes:
+  connectd_data: {}
+
+secrets:
+  connectd_signing_key:
+    file: ${CONNECTD_SIGNING_KEY_FILE:?set CONNECTD_SIGNING_KEY_FILE}
+  connectd_operator_token:
+    file: ${CONNECTD_OPERATOR_TOKEN_FILE:?set CONNECTD_OPERATOR_TOKEN_FILE}
