@@ -31,8 +31,8 @@ def _load(config: dict):
         if set(config) != {"kind", "path", "sha256", "message_overhead_tokens",
                            "tool_overhead_tokens", "safety_margin_tokens"}:
             raise TokenizerError("Hugging Face configuration needs a pinned local tokenizer file")
-        path = Path(config["path"])
         try:
+            path = Path(config["path"])
             data = path.read_bytes()
             if hashlib.sha256(data).hexdigest() != config["sha256"]:
                 raise TokenizerError("registered tokenizer file hash changed")

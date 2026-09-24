@@ -50,16 +50,18 @@ class LegacyEtlTests(unittest.TestCase):
                  ("INSERT INTO meta VALUES (?,?)", ("audit_head_seq", "1")),
                  ("INSERT INTO meta VALUES (?,?)", ("audit_head_hash", digest))])
             make_source(brain,
-                "CREATE TABLE sources(id INTEGER,hash TEXT,path TEXT,url TEXT);"
-                "CREATE TABLE claims(id INTEGER,text TEXT,source_id INTEGER,status TEXT,promoted_by TEXT,origin TEXT,scope_type TEXT,scope_id TEXT,created_at TEXT);"
+                "CREATE TABLE sources(id INTEGER,hash TEXT,path TEXT,url TEXT,origin TEXT,title TEXT);"
+                "CREATE TABLE claims(id INTEGER,text TEXT,source_id INTEGER,status TEXT,promoted_by TEXT,origin TEXT,scope_type TEXT,scope_id TEXT,created_at TEXT,confidence REAL,confidence_label TEXT,valid_from TEXT,valid_until TEXT,tags TEXT);"
                 "CREATE TABLE contradictions(id INTEGER,claim_a INTEGER,claim_b INTEGER,status TEXT);",
-                [("INSERT INTO sources VALUES (?,?,?,?)", (1, "abc", "source.md", None)),
-                 ("INSERT INTO claims VALUES (?,?,?,?,?,?,?,?,?)", (1, "trusted", 1, "promoted",
-                   "human", "human", "repo", "old", at)),
-                 ("INSERT INTO claims VALUES (?,?,?,?,?,?,?,?,?)", (2, "pending", 1, "pending",
-                   None, "agent", "repo", "old", at)),
-                 ("INSERT INTO claims VALUES (?,?,?,?,?,?,?,?,?)", (3, "promoted but contradicted", 1,
-                   "promoted", "human", "human", "repo", "old", at)),
+                [("INSERT INTO sources VALUES (?,?,?,?,?,?)", (1, "abc", "source.md", None,
+                   "document", "Source")),
+                 ("INSERT INTO claims VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (1, "trusted", 1, "promoted",
+                   "human", "human", "repo", "old", at, 0.95, "verified", at,
+                   "2099-01-01T00:00:00Z", '["trusted"]')),
+                 ("INSERT INTO claims VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (2, "pending", 1, "pending",
+                   None, "agent", "repo", "old", at, 0.5, "medium", None, None, "[]")),
+                 ("INSERT INTO claims VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (3, "promoted but contradicted", 1,
+                   "promoted", "human", "human", "repo", "old", at, 0.7, "high", None, None, "[]")),
                  ("INSERT INTO contradictions VALUES (?,?,?,?)", (1, 2, 3, "open"))])
             sources = LegacySources(agent, gov, tools, brain)
             before = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in (agent, gov, tools, brain)}
@@ -74,6 +76,13 @@ class LegacyEtlTests(unittest.TestCase):
                 self.assertEqual(db.execute("SELECT status FROM governance_grants").fetchone()[0], "legacy_expired")
                 self.assertEqual(db.execute("SELECT body_json,prev_hash,record_hash FROM legacy_tool_audit").fetchone()[0], None)
                 self.assertEqual(db.execute("SELECT count(*) FROM memory_claims").fetchone()[0], 1)
+                claim = db.execute("SELECT confidence,confidence_label,valid_until,tags_json FROM memory_claims").fetchone()
+                self.assertEqual((claim["confidence"], claim["confidence_label"], claim["tags_json"]),
+                                 (0.95, "verified", '["trusted"]'))
+                self.assertEqual(claim["valid_until"], "2099-01-01T00:00:00Z")
+                source = db.execute("SELECT source_id,origin,title FROM claim_provenance").fetchone()
+                self.assertEqual((source["source_id"], source["origin"], source["title"]),
+                                 ("1", "document", "Source"))
                 self.assertEqual(db.execute("SELECT count(*) FROM tasks WHERE status='legacy_audit_stub'").fetchone()[0], 2)
             store.dispose()
 

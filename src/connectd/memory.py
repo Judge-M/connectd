@@ -8,6 +8,18 @@ from connectd.governance import utcnow
 from connectd.store import Store
 
 
+def _validity(valid_until: str | None) -> str:
+    if not valid_until:
+        return "current"
+    try:
+        expires = datetime.fromisoformat(valid_until.replace("Z", "+00:00"))
+        if expires.tzinfo is None:
+            return "unknown"
+        return "stale" if expires < utcnow() else "current"
+    except ValueError:
+        return "unknown"
+
+
 class MemoryLedger:
     def __init__(self, store: Store):
         self.store = store
@@ -75,7 +87,7 @@ class MemoryLedger:
                 sources = db.execute("SELECT * FROM claim_provenance WHERE claim_id=? ORDER BY created_at",
                                      (claim["claim_id"],)).fetchall()
                 until = claim["valid_until"]
-                validity = "stale" if until and datetime.fromisoformat(until.replace("Z", "+00:00")) < utcnow() else "current"
+                validity = _validity(until)
                 scope_type, _, scope_id = scope.partition(":")
                 result.append({
                     "id": claim["claim_id"], "text": claim["claim_text"],

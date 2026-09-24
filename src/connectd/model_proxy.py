@@ -96,6 +96,9 @@ def create_model_proxy(config: ConnectdConfig, store: Store, operator_token: str
         if quote is not None:
             with store.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
+                if store.engine.dialect.name == "postgresql":
+                    db.execute("SELECT task_id FROM tasks WHERE task_id=? FOR UPDATE",
+                               (identity.task_id,)).fetchone()
                 if budget_requires_approval(db, identity.task_id, reserved_cents,
                                             utcnow(), config.spend.reset_timezone):
                     raise HTTPException(status_code=403, detail="paid inference requires an operator budget or approval")
