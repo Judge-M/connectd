@@ -143,6 +143,7 @@ class NodeCreate(BaseModel):
     client_cert_path: str | None = None
     client_key_path: str | None = None
     pricing: dict | None = None
+    tokenizer: dict | None = None
 
 
 class RouteRequest(BaseModel):
@@ -445,24 +446,31 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                 raise HTTPException(status_code=422, detail="remote node requires HTTPS and mTLS paths")
         if body.billing_mode == "paid" and not body.pricing:
             raise HTTPException(status_code=422, detail="paid nodes require registry pricing and cap")
+        if body.billing_mode == "paid":
+            try:
+                from connectd.token_count import validate_tokenizer, TokenizerError
+                validate_tokenizer(body.tokenizer)
+            except TokenizerError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
         if body.pricing:
             try:
                 from connectd.spend import model_quote
                 model_quote(body.pricing)
             except SpendError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
-        if body.billing_mode == "free" and body.pricing:
-            raise HTTPException(status_code=422, detail="free nodes cannot declare paid pricing")
+        if body.billing_mode == "free" and (body.pricing or body.tokenizer):
+            raise HTTPException(status_code=422, detail="free nodes cannot declare paid pricing or tokenizer")
         with store.connect() as db:
             db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,airgapped,billing_mode,
                 endpoint_url,model_id,max_context,allowed_privacy_json,ca_cert_path,client_cert_path,client_key_path,
-                pricing_model) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                pricing_model,tokenizer_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (body.node_id, body.provider_type, body.privacy_tier, True, body.airgapped, body.billing_mode,
                  body.endpoint_url, body.model_id, body.max_context,
                  json.dumps(sorted(item.value for item in body.allowed_privacy_classes))
                  if body.allowed_privacy_classes else None,
                  body.ca_cert_path, body.client_cert_path, body.client_key_path,
-                 json.dumps(body.pricing, sort_keys=True) if body.pricing else None))
+                 json.dumps(body.pricing, sort_keys=True) if body.pricing else None,
+                 json.dumps(body.tokenizer, sort_keys=True) if body.tokenizer else None))
         return {"node_id": body.node_id}
 
     @app.get("/api/v1/compute/nodes/{node_id}")

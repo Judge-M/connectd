@@ -38,6 +38,8 @@ Set `daemon.signing_key_path` to the key path. The API binds to loopback by defa
 
 Register a healthy compute node before dispatching a step. A `secret_sensitive` task uses only an air-gapped local node by default. Local inference endpoint hostnames must appear in `model_api.allowed_local_hosts` (loopback and the bundled `model-engine` name by default). Direct worker inference is limited to a matching registered free local node. Paid and remote nodes use the authenticated model proxy, which shares the task spend ledger with tool calls. Remote node records need an HTTPS endpoint, model ID, allowed privacy classes, and per-node mTLS CA/client certificate/key paths. Explicitly allowlist any remote node permitted to receive secret-sensitive requests.
 
+Paid nodes also require operator-owned pricing and a tokenizer mapping. The mapping names a `tiktoken` encoding or a local Hugging Face tokenizer JSON file with its SHA-256 digest, plus explicit chat-message, tool-schema, and safety-margin overheads. The proxy counts the complete prompt before dispatch, rejects prompts that reach the registered cost or context cap, clamps `max_tokens` to the remaining budget, and reserves the bounded maximum. It quarantines a node if the upstream reports usage outside that bound. A cost cap depends on the mapping and overheads matching the upstream model's billing behavior; verify them against provider usage before activating a paid node. Missing mappings fail closed.
+
 The default `connectd worker run-step` path asks Laya/Jev to route the step, then launches the worker with the single selected tool schema. A specific `--tool` can be supplied to bypass routing for a controlled run. `workbench` supports bounded worktree reads, writes, and local commands. New registry entries without an in-process handler remain `disabled_unbound`; an operator can activate a reviewed handler through `/api/v1/tools/{tool_id}/activate` once the daemon has bound it. The operator registry view includes inactive imported tools.
 
 ## Production container boundary
@@ -67,6 +69,8 @@ connectd db migrate-legacy \
 ```
 
 The example's privacy and payload values are explicit operator inputs, not silent importer defaults. The importer maps AgentConnect execution-record links to governance work requests and creates terminal audit-only stubs for unmatched work requests. It imports only promoted BrainConnect claims. Repeating an import against a database with legacy records is rejected without changing the imported state.
+
+Memory recall retains confidence, validity dates, tags, source provenance, supersession, and contradiction warnings. The worker context pack includes only trusted promoted claims; `/recall` and the task-scoped recall API expose full metadata. `worker_brief` projects a smaller trusted payload when requested.
 
 ## Tests
 

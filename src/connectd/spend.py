@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 import json
 from zoneinfo import ZoneInfo
 
@@ -54,15 +54,40 @@ def model_quote(pricing: str | dict) -> ModelQuote:
         maximum = int(value["max_total_tokens"])
         cap = usd_to_cents(Decimal(str(value["max_cost_per_request"])))
         if (not input_rate.is_finite() or not output_rate.is_finite() or
-                input_rate < 0 or output_rate < 0 or maximum <= 0 or cap <= 0):
+                input_rate < 0 or output_rate < 0 or input_rate + output_rate <= 0 or
+                maximum <= 0 or cap <= 0):
             raise ValueError("invalid pricing")
         worst_usd = Decimal(maximum) * max(input_rate, output_rate) / Decimal(1000)
-        reserve = int((worst_usd * 100).to_integral_value(rounding="ROUND_CEILING"))
-        if reserve <= 0 or reserve > cap:
-            raise ValueError("token cap and rates exceed max_cost_per_request")
+        reserve = min(cap, int((worst_usd * 100).to_integral_value(rounding=ROUND_CEILING)))
         return ModelQuote(reserve, maximum, input_rate, output_rate, cap)
     except (TypeError, KeyError, ValueError, ArithmeticError) as exc:
-        raise SpendError("model pricing needs input/output rates, max_total_tokens, and a sufficient max_cost_per_request") from exc
+        raise SpendError("model pricing needs nonnegative input/output rates, max_total_tokens, and max_cost_per_request") from exc
+
+
+def bounded_model_call(quote: ModelQuote, prompt_tokens: int,
+                       requested_output_tokens: int) -> tuple[int, int]:
+    """Return clamped output tokens and the rounded-up worst-case reservation."""
+    if (type(prompt_tokens) is not int or prompt_tokens < 0 or
+            type(requested_output_tokens) is not int or requested_output_tokens <= 0):
+        raise SpendError("paid inference needs valid prompt and output token counts")
+    if prompt_tokens >= quote.max_total_tokens:
+        raise SpendError("prompt exceeds registered total token limit")
+    input_usd = Decimal(prompt_tokens) * quote.input_rate_per_1k_usd / Decimal(1000)
+    cap_usd = Decimal(quote.max_cost_cents) / Decimal(100)
+    if input_usd >= cap_usd:
+        raise SpendError("prompt alone meets or exceeds the per-request cost cap")
+    remaining = cap_usd - input_usd
+    cost_limit = (int((remaining * Decimal(1000) / quote.output_rate_per_1k_usd)
+                      .to_integral_value(rounding=ROUND_FLOOR))
+                  if quote.output_rate_per_1k_usd > 0 else quote.max_total_tokens)
+    output_tokens = min(requested_output_tokens, quote.max_total_tokens - prompt_tokens, cost_limit)
+    if output_tokens <= 0:
+        raise SpendError("no output tokens remain under the per-request cost cap")
+    reserved_usd = input_usd + Decimal(output_tokens) * quote.output_rate_per_1k_usd / Decimal(1000)
+    reserved_cents = int((reserved_usd * 100).to_integral_value(rounding=ROUND_CEILING))
+    if reserved_cents > quote.max_cost_cents:
+        raise SpendError("model reservation exceeds the per-request cost cap")
+    return output_tokens, reserved_cents
 
 
 def metered_quote(pricing: str | dict | None) -> tuple[int, int, int]:

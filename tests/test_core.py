@@ -25,6 +25,11 @@ from connectd.worker import WorkerReport
 from connectd.model_proxy import create_model_proxy
 
 
+PAID_TOKENIZER = {"kind": "tiktoken", "encoding": "cl100k_base",
+                  "message_overhead_tokens": 4, "tool_overhead_tokens": 8,
+                  "safety_margin_tokens": 100}
+
+
 class CoreTests(unittest.TestCase):
     def setUp(self):
         scratch = Path(__file__).parents[1] / "work"
@@ -404,7 +409,8 @@ class CoreTests(unittest.TestCase):
         registered = client.post("/api/v1/compute/nodes", headers=operator, json={
             "node_id": "paid-local", "provider_type": "metered", "privacy_tier": "local_only",
             "billing_mode": "paid", "endpoint_url": "http://127.0.0.1:8080",
-            "model_id": "paid-model", "pricing": {"input_rate_per_1k_tokens": "0.10",
+            "model_id": "paid-model", "tokenizer": PAID_TOKENIZER,
+            "pricing": {"input_rate_per_1k_tokens": "0.10",
                 "output_rate_per_1k_tokens": "0.20", "max_total_tokens": 1000,
                 "max_cost_per_request": "0.20"}})
         self.assertEqual(registered.status_code, 201, registered.text)
@@ -471,10 +477,11 @@ class CoreTests(unittest.TestCase):
                    "max_total_tokens": 1000, "max_cost_per_request": "0.20"}
         with self.store.connect() as db:
             db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,
-                airgapped,billing_mode,endpoint_url,model_id,pricing_model)
-                VALUES (?,?,?,?,?,?,?,?,?)""",
+                airgapped,billing_mode,endpoint_url,model_id,pricing_model,tokenizer_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 ("paid-model", "vllm", "local_only", True, False, "paid",
-                 "http://model-engine:8090", "capable-model", json.dumps(pricing)))
+                 "http://model-engine:8090", "capable-model", json.dumps(pricing),
+                 json.dumps(PAID_TOKENIZER)))
         worker_token = AuthService(self.store, "o" * 40).issue_worker("task-1", "worker-1")
         calls = []
 
@@ -500,8 +507,9 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         with self.store.connect() as db:
             record = db.execute("SELECT amount_cents,reserved_cents,status,actual_units FROM quota_records").fetchone()
-        self.assertEqual((record["amount_cents"], record["reserved_cents"],
-                          record["status"], record["actual_units"]), (2, 20, "settled", 150))
+        self.assertEqual((record["amount_cents"], record["status"], record["actual_units"]),
+                         (2, "settled", 150))
+        self.assertLess(record["reserved_cents"], 20)
 
     def test_worker_turn_uses_paid_proxy_and_settles_quota(self):
         import httpx
@@ -509,19 +517,20 @@ class CoreTests(unittest.TestCase):
 
         with self.store.connect() as db:
             db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,
-                airgapped,billing_mode,endpoint_url,model_id,pricing_model)
-                VALUES (?,?,?,?,?,?,?,?,?)""",
+                airgapped,billing_mode,endpoint_url,model_id,pricing_model,tokenizer_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 ("paid-loop", "vllm", "local_only", True, False, "paid",
                  "http://model-engine:8090", "capable-model", json.dumps({
                      "input_rate_per_1k_tokens": "0.10",
                      "output_rate_per_1k_tokens": "0.20",
-                     "max_total_tokens": 1000, "max_cost_per_request": "0.20"})))
+                     "max_total_tokens": 1000, "max_cost_per_request": "0.20"}),
+                 json.dumps(PAID_TOKENIZER)))
             db.execute("""INSERT INTO quota_budgets(budget_id,task_id,period,amount_cents,
                 approved_by,created_at) VALUES (?,?,?,?,?,?)""",
                 (str(uuid.uuid4()), "task-1", "daily", 100, "operator", utcnow().isoformat()))
 
         def respond(request):
-            self.assertEqual(json.loads(request.content)["max_tokens"], 1000)
+            self.assertLess(json.loads(request.content)["max_tokens"], 1000)
             self.assertNotIn("authorization", request.headers)
             return httpx.Response(200, json={"choices": [{"message": {"content": "Done"}}],
                 "usage": {"prompt_tokens": 100, "completion_tokens": 50}})
@@ -540,6 +549,79 @@ class CoreTests(unittest.TestCase):
         with self.store.connect() as db:
             row = db.execute("SELECT amount_cents,status FROM quota_records").fetchone()
         self.assertEqual((row["amount_cents"], row["status"]), (2, "settled"))
+
+    def test_paid_model_cap_clamps_output_and_blocks_large_prompt(self):
+        import httpx
+        from fastapi.testclient import TestClient
+
+        with self.store.connect() as db:
+            db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,
+                airgapped,billing_mode,endpoint_url,model_id,pricing_model,tokenizer_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                ("capped", "vllm", "local_only", True, False, "paid",
+                 "http://model-engine:8090", "capable-model", json.dumps({
+                     "input_rate_per_1k_tokens": "0.10",
+                     "output_rate_per_1k_tokens": "1.00",
+                     "max_total_tokens": 1000, "max_cost_per_request": "0.05"}),
+                 json.dumps(PAID_TOKENIZER)))
+            db.execute("""INSERT INTO quota_budgets(budget_id,task_id,period,amount_cents,
+                approved_by,created_at) VALUES (?,?,?,?,?,?)""",
+                (str(uuid.uuid4()), "task-1", "daily", 100, "operator", utcnow().isoformat()))
+        upstream = []
+
+        def respond(request):
+            upstream.append(json.loads(request.content))
+            return httpx.Response(200, json={"choices": [], "usage": {
+                "prompt_tokens": 100, "completion_tokens": 10}})
+
+        app = create_model_proxy(ConnectdConfig(), self.store, "o" * 40,
+            client_factory=lambda _tls: httpx.Client(transport=httpx.MockTransport(respond)))
+        client = TestClient(app)
+        token = AuthService(self.store, "o" * 40).issue_worker("task-1", "worker-1")
+        headers = {"Authorization": "Bearer " + token}
+        payload = {"model": "capable-model", "messages": [{"role": "user", "content": "hello"}],
+                   "max_tokens": 900}
+        result = client.post("/v1/chat/completions", headers=headers, json=payload)
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertLess(upstream[0]["max_tokens"], 900)
+        self.assertLessEqual(upstream[0]["max_tokens"], 40)
+        oversized = dict(payload, messages=[{"role": "user", "content": "word " * 2000}])
+        result = client.post("/v1/chat/completions", headers=headers, json=oversized)
+        self.assertEqual(result.status_code, 422)
+        self.assertEqual(len(upstream), 1)
+
+    def test_paid_model_quarantines_node_when_usage_exceeds_bound(self):
+        import httpx
+        from fastapi.testclient import TestClient
+
+        with self.store.connect() as db:
+            db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,
+                airgapped,billing_mode,endpoint_url,model_id,pricing_model,tokenizer_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                ("miscounted", "vllm", "local_only", True, False, "paid",
+                 "http://model-engine:8090", "capable-model", json.dumps({
+                     "input_rate_per_1k_tokens": "0.10",
+                     "output_rate_per_1k_tokens": "0.20",
+                     "max_total_tokens": 1000, "max_cost_per_request": "0.20"}),
+                 json.dumps(PAID_TOKENIZER)))
+            db.execute("""INSERT INTO quota_budgets(budget_id,task_id,period,amount_cents,
+                approved_by,created_at) VALUES (?,?,?,?,?,?)""",
+                (str(uuid.uuid4()), "task-1", "daily", 100, "operator", utcnow().isoformat()))
+
+        def respond(_request):
+            return httpx.Response(200, json={"choices": [], "usage": {
+                "prompt_tokens": 999, "completion_tokens": 1}})
+
+        client = TestClient(create_model_proxy(ConnectdConfig(), self.store, "o" * 40,
+            client_factory=lambda _tls: httpx.Client(transport=httpx.MockTransport(respond))))
+        token = AuthService(self.store, "o" * 40).issue_worker("task-1", "worker-1")
+        response = client.post("/v1/chat/completions",
+            headers={"Authorization": "Bearer " + token}, json={"model": "capable-model",
+            "messages": [{"role": "user", "content": "hello"}], "max_tokens": 100})
+        self.assertEqual(response.status_code, 502)
+        with self.store.connect() as db:
+            self.assertFalse(db.execute("SELECT healthy FROM compute_nodes WHERE node_id='miscounted'").fetchone()[0])
+            self.assertEqual(db.execute("SELECT status FROM quota_records").fetchone()[0], "reserved")
 
     def test_legacy_aliases_require_task_and_default_private(self):
         from fastapi.testclient import TestClient

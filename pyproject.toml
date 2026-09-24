@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "A local-first control plane for bounded agent work"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["cryptography>=42", "pydantic>=2", "httpx>=0.27", "PyYAML>=6", "SQLAlchemy>=2", "alembic>=1.13", "cedarpy>=4.8,<5", "jsonschema>=4", "tzdata>=2025.1"]
+dependencies = ["cryptography>=42", "pydantic>=2", "httpx>=0.27", "PyYAML>=6", "SQLAlchemy>=2", "alembic>=1.13", "cedarpy>=4.8,<5", "jsonschema>=4", "tzdata>=2025.1", "tiktoken>=0.14,<1", "tokenizers>=0.23,<1"]
 
 [project.optional-dependencies]
 api = ["fastapi>=0.110", "uvicorn>=0.28"]
