@@ -13,7 +13,7 @@
 - Subprocess and Docker workers in `dev_fast`/`balanced`; an internal Docker network in `prod_secure`.
 - A remote model proxy with per-node mTLS and no worker bearer forwarded to the remote node.
 - Selective read-only import from AgentConnect, Connect-Governance, ToolConnect, and BrainConnect SQLite files. Historical grants are marked `legacy_expired`, and ToolConnect audit chain fields are retained.
-- Task-scoped daily, weekly, and monthly spend budgets. Financial Tier 2 grants reserve registry-declared fixed costs; missing or exceeded budgets require an exact operator approval in every profile.
+- Task-scoped daily, weekly, and monthly spend budgets. Paid model calls and financial Tier 2 tools reserve registry-declared worst-case costs. Unconfigured or exceeded budgets block dispatch until an operator sets a budget or approves the exact tool action.
 
 ## Install and configure
 
@@ -38,7 +38,7 @@ Set `daemon.signing_key_path` to the key path. The API binds to loopback by defa
 
 Register a healthy compute node before dispatching a step. A `secret_sensitive` task uses only an air-gapped local node by default. Remote node records need an HTTPS endpoint, model ID, allowed privacy classes, and per-node mTLS CA/client certificate/key paths. Explicitly allowlist any remote node permitted to receive secret-sensitive requests.
 
-The default `connectd worker run-step` path asks Laya/Jev to route the step, then launches the worker with the single selected tool schema. A specific `--tool` can be supplied to bypass routing for a controlled run. `workbench` supports bounded worktree reads, writes, and local commands; additional external handlers must be registered by the daemon application before they are callable.
+The default `connectd worker run-step` path asks Laya/Jev to route the step, then launches the worker with the single selected tool schema. A specific `--tool` can be supplied to bypass routing for a controlled run. `workbench` supports bounded worktree reads, writes, and local commands. New registry entries without an in-process handler remain `disabled_unbound`; an operator can activate a reviewed handler through `/api/v1/tools/{tool_id}/activate` once the daemon has bound it. The operator registry view includes inactive imported tools.
 
 ## Production container boundary
 

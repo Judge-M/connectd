@@ -39,7 +39,7 @@ V1 supports **both SQLite and PostgreSQL** at runtime through one relational sch
 3. ToolConnect registry entries and audit logs.
 4. BrainConnect promoted trusted memory claims and their provenance.
 
-Unpromoted candidates remain in their source databases. Imported historical grants have `status='legacy_expired'` and can never be redeemed. The importer retains source identity mappings, records payload hashes, validates foreign keys, and is safe to rerun. For old tasks without privacy metadata and for audit payloads that may contain secrets, import behavior awaits the operator's explicit choices; the importer must fail with an actionable message until those options are set.
+Unpromoted candidates remain in their source databases. Imported historical grants have `status='legacy_expired'` and can never be redeemed. The importer retains source identity mappings, records payload hashes, and validates foreign keys. A repeated import is rejected before changing destination records. The CLI requires explicit privacy classification for old tasks with missing metadata and explicit audit payload retention mode. New tool registry rows remain disabled until a reviewed execution handler is bound and an operator activates them.
 
 ## 5. Delivery phases
 

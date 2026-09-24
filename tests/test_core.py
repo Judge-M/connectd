@@ -462,6 +462,23 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         self.assertTrue(response.json()["execution"]["gateway_required"])
 
+    def test_registry_does_not_activate_unbound_handler(self):
+        from fastapi.testclient import TestClient
+
+        operator_token = "o" * 40
+        client = TestClient(create_app(ConnectdConfig(), self.store,
+                                      Ed25519PrivateKey.generate(), operator_token))
+        headers = {"Authorization": "Bearer " + operator_token}
+        registered = client.post("/api/v1/tools", headers=headers, json={
+            "tool_id": "unbound", "name": "Unbound", "domain_path": "test",
+            "schema": {"type": "object"}, "effect_tier": 2})
+        self.assertEqual(registered.status_code, 201, registered.text)
+        self.assertEqual(registered.json()["status"], "disabled_unbound")
+        self.assertEqual(client.post("/api/v1/tools/unbound/activate", headers=headers).status_code, 409)
+        tools = client.get("/api/v1/tools", headers=headers).json()
+        self.assertEqual(next(row for row in tools if row["tool_id"] == "unbound")["status"],
+                         "disabled_unbound")
+
 
 if __name__ == "__main__":
     unittest.main()

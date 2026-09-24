@@ -137,7 +137,8 @@ class BudgetCreate(BaseModel):
 
 
 def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519PrivateKey,
-               operator_token: str, decision_router=TypedDecisionRouter) -> FastAPI:
+               operator_token: str, decision_router=TypedDecisionRouter,
+               tool_handlers: dict | None = None) -> FastAPI:
     store.initialize()
     auth = AuthService(store, operator_token)
     tasks = TaskManager(store)
@@ -149,6 +150,8 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                             spend_reset_timezone=config.spend.reset_timezone)
     gateway = ToolGateway(store, governance)
     gateway.register_handler("echo", lambda args: {"echo": args})
+    for tool_id, handler in (tool_handlers or {}).items():
+        gateway.register_handler(tool_id, handler)
     bearer = HTTPBearer(auto_error=False)
     app = FastAPI(title="connectd", version=__version__)
 
@@ -434,16 +437,36 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                 metered_quote(body.pricing_model)
             except SpendError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
+        bound = body.tool_id in gateway.handlers
         with store.connect() as db:
             db.execute("""INSERT INTO tool_registry(tool_id,name,domain_path,schema_json,effect_tier,active,
-                provider_tier,effect_class,is_financial,cost_per_invocation_cents,pricing_model)
-                VALUES (?,?,?,?,?,TRUE,?,?,?,?,?)""",
+                status,provider_tier,effect_class,is_financial,cost_per_invocation_cents,pricing_model)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                        (body.tool_id, body.name, body.domain_path,
-                        json.dumps(body.input_schema, sort_keys=True), body.effect_tier,
+                        json.dumps(body.input_schema, sort_keys=True), body.effect_tier, bound,
+                        "active" if bound else "disabled_unbound",
                         body.provider_tier, body.effect_class, body.is_financial,
                         body.cost_per_invocation_cents,
                         json.dumps(body.pricing_model, sort_keys=True) if body.pricing_model else None))
-        return {"tool_id": body.tool_id}
+        return {"tool_id": body.tool_id, "status": "active" if bound else "disabled_unbound"}
+
+    @app.get("/api/v1/tools")
+    def list_tools(_operator: Annotated[None, Depends(operator)]):
+        with store.connect() as db:
+            rows = db.execute("""SELECT tool_id,name,domain_path,effect_tier,active,status,origin
+                FROM tool_registry ORDER BY name,tool_id""").fetchall()
+        return [dict(row.row._mapping) for row in rows]
+
+    @app.post("/api/v1/tools/{tool_id}/activate")
+    def activate_tool(tool_id: str, _operator: Annotated[None, Depends(operator)]):
+        if tool_id not in gateway.handlers:
+            raise HTTPException(status_code=409, detail="tool has no reviewed execution handler")
+        with store.connect() as db:
+            updated = db.execute("""UPDATE tool_registry SET active=TRUE,status='active'
+                WHERE tool_id=? AND active=FALSE""", (tool_id,))
+            if updated.rowcount != 1:
+                raise HTTPException(status_code=404, detail="inactive tool not found")
+        return {"tool_id": tool_id, "status": "active"}
 
     @app.get("/api/v1/tools/{tool_id}")
     def get_tool(tool_id: str, identity: Annotated[WorkerIdentity, Depends(worker)]):
