@@ -27,6 +27,7 @@ from connectd.tools import ToolError, ToolGateway
 from connectd.model import TypedDecisionRouter
 from connectd.router import RouteError
 from connectd.registry_access import visible_to
+from connectd.provisioning import LocalSecretResolver, PodRequest, ProvisioningError, RunPodAdapter
 from connectd.workbench import WORKBENCH_TOOL
 from connectd.governance import utcnow
 from connectd.control_ui import CONTROL_HTML
@@ -45,6 +46,12 @@ class OperatorCreate(BaseModel):
 
 class OrganizationSettingsUpdate(BaseModel):
     allow_unquoted_runpod: bool
+
+
+class PodQuoteRequest(BaseModel):
+    gpu_type_id: str = Field(min_length=1)
+    gpu_count: int = Field(default=1, ge=1, le=16)
+    cloud_type: Literal["SECURE", "COMMUNITY"] = "SECURE"
 
 
 class TaskCreate(BaseModel):
@@ -174,7 +181,7 @@ class BudgetCreate(BaseModel):
 
 def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519PrivateKey,
                operator_token: str, decision_router=TypedDecisionRouter,
-               tool_handlers: dict | None = None) -> FastAPI:
+               tool_handlers: dict | None = None, provisioning_adapter=None) -> FastAPI:
     store.initialize()
     auth = AuthService(store, operator_token)
     tasks = TaskManager(store)
@@ -280,6 +287,27 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         if updated.rowcount != 1:
             raise HTTPException(status_code=404, detail="organization not found")
         return {"org_id": org_id, "allow_unquoted_runpod": body.allow_unquoted_runpod}
+
+    @app.post("/api/v1/orgs/{org_id}/provisioning/runpod/quote")
+    def quote_runpod_pod(org_id: str, body: PodQuoteRequest,
+                         identity: Annotated[OperatorIdentity, Depends(admin)]):
+        require_org(identity, org_id)
+        with store.connect() as db:
+            if db.execute("SELECT 1 FROM organizations WHERE org_id=?",
+                          (org_id,)).fetchone() is None:
+                raise HTTPException(status_code=404, detail="organization not found")
+        adapter = provisioning_adapter or RunPodAdapter(
+            LocalSecretResolver(config.provisioning.runpod_secret_file))
+        request = PodRequest(name="quote-preview", gpu_type_id=body.gpu_type_id,
+                             gpu_count=body.gpu_count, image_name="quote-only",
+                             cloud_type=body.cloud_type)
+        try:
+            quote = adapter.quote(request)
+        except ProvisioningError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {"gpu_hourly_usd": str(quote.gpu_hourly_usd),
+                "availability": quote.availability, "source": quote.source,
+                "includes_storage": False, "binding_price": False}
 
     @app.get("/api/v1/orgs/{org_id}/shares")
     def list_registry_shares(org_id: str,

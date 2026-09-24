@@ -119,6 +119,12 @@ class ComputeSettings(BaseModel):
     node_managers: list[NodeManagerSettings] = Field(default_factory=list)
 
 
+class ProvisioningSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    runpod_secret_file: Path | None = None
+
+
 class ExecutionProfile(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -147,6 +153,7 @@ class ConnectdConfig(BaseModel):
     task_defaults: TaskDefaults = Field(default_factory=TaskDefaults)
     spend: SpendSettings = Field(default_factory=SpendSettings)
     compute: ComputeSettings = Field(default_factory=ComputeSettings)
+    provisioning: ProvisioningSettings = Field(default_factory=ProvisioningSettings)
     default_execution_profile: str = "balanced"
     execution_profiles: dict[str, ExecutionProfile] = Field(default_factory=default_profiles)
     # Secret-sensitive tasks use only air-gapped local nodes by default.

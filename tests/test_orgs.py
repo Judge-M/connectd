@@ -1,6 +1,8 @@
 """Organization roles and task/memory isolation."""
 
 import tempfile
+from decimal import Decimal
+from unittest.mock import Mock
 import unittest
 from pathlib import Path
 
@@ -13,6 +15,7 @@ from connectd.config import ConnectdConfig
 from connectd.compute import PlacementDenied, PrivacyClass, place
 from connectd.governance import AuthorizationError, Governance, utcnow
 from connectd.memory import MemoryLedger
+from connectd.provisioning import PodQuote
 from connectd.store import Store
 
 
@@ -20,8 +23,10 @@ class OrganizationTests(unittest.TestCase):
     def test_role_and_task_isolation(self):
         with tempfile.TemporaryDirectory() as temp:
             store = Store(Path(temp) / "connectd.db")
+            provisioner = Mock()
+            provisioner.quote.return_value = PodQuote(Decimal("0.88"), "HIGH")
             app = create_app(ConnectdConfig(), store, Ed25519PrivateKey.generate(),
-                             "b" * 40)
+                             "b" * 40, provisioning_adapter=provisioner)
             client = TestClient(app)
             bootstrap = {"Authorization": "Bearer " + "b" * 40}
             org_a = client.post("/api/v1/orgs", headers=bootstrap,
@@ -85,6 +90,21 @@ class OrganizationTests(unittest.TestCase):
             self.assertEqual(client.get(shares_path, headers=operator_a).status_code, 403)
             self.assertEqual(client.get(f"/api/v1/orgs/{org_b}/shares",
                                         headers=admin_a).status_code, 404)
+            quote_path = f"/api/v1/orgs/{org_a}/provisioning/runpod/quote"
+            quote_payload = {"gpu_type_id": "GPU", "gpu_count": 2,
+                             "cloud_type": "SECURE"}
+            self.assertEqual(client.post(quote_path, headers=operator_a,
+                                         json=quote_payload).status_code, 403)
+            self.assertEqual(client.post(
+                f"/api/v1/orgs/{org_b}/provisioning/runpod/quote", headers=admin_a,
+                json=quote_payload).status_code, 404)
+            quote = client.post(quote_path, headers=admin_a, json=quote_payload)
+            self.assertEqual(quote.status_code, 200)
+            self.assertEqual(quote.json()["gpu_hourly_usd"], "0.88")
+            self.assertFalse(quote.json()["includes_storage"])
+            self.assertFalse(quote.json()["binding_price"])
+            provisioner.quote.assert_called_once()
+            self.assertEqual(provisioner.quote.call_args.args[0].gpu_count, 2)
             settings_path = f"/api/v1/orgs/{org_a}/settings"
             self.assertFalse(client.get(settings_path, headers=admin_a).json()[
                 "allow_unquoted_runpod"])

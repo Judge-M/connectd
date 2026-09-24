@@ -28,6 +28,8 @@ spend:
 compute:
   health_interval_seconds: 30
   node_managers: []
+provisioning:
+  runpod_secret_file: null  # Optional local env file containing RUNPOD_API_KEY.
 default_execution_profile: "balanced"
 secret_sensitive_allowed_node_ids: []
 execution_profiles:
