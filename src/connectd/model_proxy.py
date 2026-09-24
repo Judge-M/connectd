@@ -37,14 +37,15 @@ def create_model_proxy(config: ConnectdConfig, store: Store, operator_token: str
         except AuthenticationError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         with store.connect() as db:
-            task = db.execute("SELECT privacy_class FROM tasks WHERE task_id=?", (identity.task_id,)).fetchone()
+            task = db.execute("SELECT privacy_class,org_id FROM tasks WHERE task_id=?", (identity.task_id,)).fetchone()
         if task is None:
             raise HTTPException(status_code=404, detail="task not found")
         try:
             node_id = place(store, PrivacyClass(task["privacy_class"]),
                             config.secret_sensitive_allowed_node_ids,
                             model_id=payload.get("model"),
-                            max_health_age_seconds=config.compute.health_interval_seconds * 3)
+                            max_health_age_seconds=config.compute.health_interval_seconds * 3,
+                            org_id=task["org_id"])
         except PlacementDenied as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         with store.connect() as db:

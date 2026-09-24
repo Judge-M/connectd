@@ -13,6 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from connectd.config import ExecutionProfile, GrantMode
 from connectd.store import Store
 from connectd.spend import SpendError, assess_spend
+from connectd.registry_access import visible_to
 
 
 def utcnow() -> datetime:
@@ -75,10 +76,12 @@ class Governance:
             db.execute("BEGIN IMMEDIATE")
             if self.store.engine.dialect.name == "postgresql":
                 db.execute("SELECT task_id FROM tasks WHERE task_id=? FOR UPDATE", (task_id,)).fetchone()
-            task = db.execute("SELECT privacy_class,execution_profile,is_terminal FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            task = db.execute("SELECT privacy_class,execution_profile,is_terminal,org_id FROM tasks WHERE task_id=?", (task_id,)).fetchone()
             tool = db.execute("SELECT * FROM tool_registry WHERE tool_id=?", (tool_id,)).fetchone()
             if task is None or task["is_terminal"] or tool is None or not tool["active"]:
                 raise AuthorizationError("unknown task or inactive tool")
+            if not visible_to(db, tool["owner_org_id"], task["org_id"], "tool", tool_id):
+                raise AuthorizationError("tool is not shared with the task organization")
             profile = self.profile
             if self.profiles is not None:
                 profile = self.profiles.get(task["execution_profile"])
@@ -164,6 +167,12 @@ class Governance:
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             try:
+                task = db.execute("SELECT org_id FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+                tool = db.execute("SELECT owner_org_id FROM tool_registry WHERE tool_id=?",
+                                  (tool_id,)).fetchone()
+                if (task is None or tool is None or not visible_to(
+                        db, tool["owner_org_id"], task["org_id"], "tool", tool_id)):
+                    raise AuthorizationError("tool share was revoked")
                 result = db.execute("""UPDATE governance_grants SET status='redeemed'
                     WHERE grant_id=? AND decision_id=? AND signature=? AND status='issued' AND expires_at>?""",
                     (grant["grant_id"], grant["decision_id"], grant["signature"], utcnow().isoformat()))

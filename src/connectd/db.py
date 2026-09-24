@@ -1,6 +1,6 @@
 """Unified relational schema and SQLAlchemy engine configuration."""
 
-from sqlalchemy import Boolean, CheckConstraint, Column, Float, ForeignKey, Index, Integer, MetaData, String, Table, Text, create_engine, event
+from sqlalchemy import Boolean, CheckConstraint, Column, Float, ForeignKey, Index, Integer, MetaData, PrimaryKeyConstraint, String, Table, Text, create_engine, event
 from sqlalchemy.engine import Engine
 
 
@@ -65,6 +65,8 @@ artifacts = Table("artifacts", metadata,
 )
 tool_registry = Table("tool_registry", metadata,
     Column("tool_id", String, primary_key=True),
+    Column("owner_org_id", String, ForeignKey("organizations.org_id"), nullable=False,
+           server_default="default"),
     Column("name", String, nullable=False),
     Column("domain_path", String, nullable=False),
     Column("schema_json", Text, nullable=False),
@@ -201,6 +203,8 @@ claim_contradictions = Table("claim_contradictions", metadata,
 )
 compute_nodes = Table("compute_nodes", metadata,
     Column("node_id", String, primary_key=True),
+    Column("owner_org_id", String, ForeignKey("organizations.org_id"), nullable=False,
+           server_default="default"),
     Column("provider_type", String, nullable=False),
     Column("privacy_tier", String, nullable=False),
     Column("healthy", Boolean, nullable=False, server_default="1"),
@@ -222,6 +226,19 @@ compute_nodes = Table("compute_nodes", metadata,
     Column("capacity_json", Text),
     CheckConstraint("privacy_tier IN ('local_only','private_rented','external')"),
 )
+registry_shares = Table("registry_shares", metadata,
+    Column("owner_org_id", String, ForeignKey("organizations.org_id"), nullable=False),
+    Column("target_org_id", String, ForeignKey("organizations.org_id"), nullable=False),
+    Column("resource_kind", String, nullable=False),
+    Column("resource_id", String, nullable=False),
+    Column("created_by", String, nullable=False),
+    Column("created_at", String, nullable=False),
+    PrimaryKeyConstraint("owner_org_id", "target_org_id", "resource_kind", "resource_id"),
+    CheckConstraint("resource_kind IN ('tool','node')"),
+)
+Index("idx_registry_shares_target", registry_shares.c.target_org_id,
+      registry_shares.c.resource_kind, registry_shares.c.resource_id)
+
 workload_placements = Table("workload_placements", metadata,
     Column("placement_id", String, primary_key=True),
     Column("task_id", String, ForeignKey("tasks.task_id", ondelete="CASCADE"), nullable=False),

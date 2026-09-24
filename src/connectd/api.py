@@ -26,6 +26,7 @@ from connectd.task import Lease, LeaseError, TaskManager
 from connectd.tools import ToolError, ToolGateway
 from connectd.model import TypedDecisionRouter
 from connectd.router import RouteError
+from connectd.registry_access import visible_to
 from connectd.workbench import WORKBENCH_TOOL
 from connectd.governance import utcnow
 from connectd.control_ui import CONTROL_HTML
@@ -539,7 +540,7 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         return [dict(row.row._mapping) for row in rows]
 
     @app.post("/api/v1/compute/nodes", status_code=201)
-    def register_node(body: NodeCreate, _operator: Annotated[None, Depends(operator)]):
+    def register_node(body: NodeCreate, identity: Annotated[OperatorIdentity, Depends(admin)]):
         if body.privacy_tier not in ("local_only", "private_rented", "external"):
             raise HTTPException(status_code=422, detail="invalid privacy tier")
         from urllib.parse import urlsplit
@@ -605,10 +606,10 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         if body.billing_mode == "free" and (body.pricing or body.tokenizer or body.preflight_url):
             raise HTTPException(status_code=422, detail="free nodes cannot declare paid pricing or preflight")
         with store.connect() as db:
-            db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,airgapped,billing_mode,
+            db.execute("""INSERT INTO compute_nodes(node_id,owner_org_id,provider_type,privacy_tier,healthy,airgapped,billing_mode,
                 endpoint_url,model_id,max_context,allowed_privacy_json,ca_cert_path,client_cert_path,client_key_path,
-                pricing_model,tokenizer_json,preflight_url,health_url,manager_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (body.node_id, body.provider_type, body.privacy_tier,
+                pricing_model,tokenizer_json,preflight_url,health_url,manager_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (body.node_id, identity.org_id or "default", body.provider_type, body.privacy_tier,
                  body.privacy_tier == "local_only" and not body.health_url,
                  body.airgapped, body.billing_mode,
                  body.endpoint_url, body.model_id, body.max_context,
@@ -621,26 +622,29 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         return {"node_id": body.node_id}
 
     @app.get("/api/v1/compute/nodes/{node_id}")
-    def get_node(node_id: str, _operator: Annotated[None, Depends(operator)]):
+    def get_node(node_id: str, identity: Annotated[OperatorIdentity, Depends(admin)]):
         with store.connect() as db:
             row = db.execute("SELECT * FROM compute_nodes WHERE node_id=?", (node_id,)).fetchone()
-        if row is None:
+        if row is None or (not identity.bootstrap and row["owner_org_id"] != identity.org_id):
             raise HTTPException(status_code=404, detail="node not found")
         return dict(row.row._mapping)
 
     @app.get("/api/v1/compute/nodes")
-    def list_nodes(_operator: Annotated[None, Depends(operator)]):
+    def list_nodes(identity: Annotated[OperatorIdentity, Depends(reader)]):
         with store.connect() as db:
-            rows = db.execute("""SELECT node_id,provider_type,privacy_tier,healthy,
+            rows = db.execute("""SELECT node_id,owner_org_id,provider_type,privacy_tier,healthy,
                 model_id,last_health_at,capacity_json,manager_id FROM compute_nodes ORDER BY node_id""").fetchall()
-        return [dict(row.row._mapping) for row in rows]
+            visible = [row for row in rows if identity.bootstrap or visible_to(
+                db, row["owner_org_id"], identity.org_id, "node", row["node_id"])]
+        return [dict(row.row._mapping) for row in visible]
 
     @app.post("/api/v1/compute/nodes/{node_id}/probe")
-    def probe_node(node_id: str, _operator: Annotated[None, Depends(operator)]):
+    def probe_node(node_id: str, identity: Annotated[OperatorIdentity, Depends(admin)]):
         from connectd.node_monitor import NodeMonitor
         with store.connect() as db:
-            node = db.execute("SELECT manager_id FROM compute_nodes WHERE node_id=?", (node_id,)).fetchone()
-        if node is None:
+            node = db.execute("SELECT manager_id,owner_org_id FROM compute_nodes WHERE node_id=?",
+                              (node_id,)).fetchone()
+        if node is None or (not identity.bootstrap and node["owner_org_id"] != identity.org_id):
             raise HTTPException(status_code=404, detail="node not found")
         monitor = NodeMonitor(store)
         if node["manager_id"]:
@@ -653,7 +657,7 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         return {"node_id": node_id, "healthy": True}
 
     @app.post("/api/v1/tools", status_code=201)
-    def register_tool(body: ToolCreate, _operator: Annotated[None, Depends(operator)]):
+    def register_tool(body: ToolCreate, identity: Annotated[OperatorIdentity, Depends(admin)]):
         import json
 
         financial = (body.is_financial or body.provider_tier in {"external_paid", "private_rented"}
@@ -668,10 +672,10 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
         bound = body.tool_id in gateway.handlers
         with store.connect() as db:
-            db.execute("""INSERT INTO tool_registry(tool_id,name,domain_path,schema_json,effect_tier,active,
+            db.execute("""INSERT INTO tool_registry(tool_id,owner_org_id,name,domain_path,schema_json,effect_tier,active,
                 status,provider_tier,effect_class,is_financial,cost_per_invocation_cents,pricing_model)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                       (body.tool_id, body.name, body.domain_path,
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       (body.tool_id, identity.org_id or "default", body.name, body.domain_path,
                         json.dumps(body.input_schema, sort_keys=True), body.effect_tier, bound,
                         "active" if bound else "disabled_unbound",
                         body.provider_tier, body.effect_class, body.is_financial,
@@ -698,11 +702,13 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         return proposals
 
     @app.get("/api/v1/tools")
-    def list_tools(_operator: Annotated[None, Depends(operator)]):
+    def list_tools(identity: Annotated[OperatorIdentity, Depends(reader)]):
         with store.connect() as db:
-            rows = db.execute("""SELECT tool_id,name,domain_path,effect_tier,active,status,origin
+            rows = db.execute("""SELECT tool_id,owner_org_id,name,domain_path,effect_tier,active,status,origin
                 FROM tool_registry ORDER BY name,tool_id""").fetchall()
-        return [dict(row.row._mapping) for row in rows]
+            visible = [row for row in rows if identity.bootstrap or visible_to(
+                db, row["owner_org_id"], identity.org_id, "tool", row["tool_id"])]
+        return [dict(row.row._mapping) for row in visible]
 
     @app.post("/api/v1/tools/{tool_id}/activate")
     def activate_tool(tool_id: str, _operator: Annotated[None, Depends(operator)]):
@@ -721,6 +727,10 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
             row = db.execute("SELECT * FROM tool_registry WHERE tool_id=? AND active=TRUE", (tool_id,)).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="tool not found")
+        task = task_row(identity.task_id)
+        with store.connect() as db:
+            if not visible_to(db, row["owner_org_id"], task["org_id"], "tool", tool_id):
+                raise HTTPException(status_code=404, detail="tool not found")
         import json
         return {"tool_id": row["tool_id"], "name": row["name"],
                 "effect_tier": row["effect_tier"], "schema": json.loads(row["schema_json"])}
@@ -761,6 +771,11 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                                       (tool_id,)).fetchone()
             if tool_row is None:
                 raise HTTPException(status_code=503, detail="route resolves to inactive tool")
+            with store.connect() as db:
+                allowed_tool = visible_to(db, tool_row["owner_org_id"], row["org_id"],
+                                          "tool", tool_id)
+            if not allowed_tool:
+                raise HTTPException(status_code=403, detail="route resolves to an unshared tool")
             schema = {"type": "function", "function": {"name": tool_id,
                       "description": tool_row["name"],
                       "parameters": json.loads(tool_row["schema_json"])}}
@@ -791,7 +806,8 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         try:
             node_id = place(store, PrivacyClass(row["privacy_class"]),
                             config.secret_sensitive_allowed_node_ids,
-                            max_health_age_seconds=config.compute.health_interval_seconds * 3)
+                            max_health_age_seconds=config.compute.health_interval_seconds * 3,
+                            org_id=row["org_id"])
         except PlacementDenied as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         with store.connect() as db:

@@ -6,6 +6,7 @@ from enum import Enum
 
 from connectd.governance import utcnow
 from connectd.store import Store
+from connectd.registry_access import visible_to
 
 
 class PrivacyClass(str, Enum):
@@ -30,17 +31,20 @@ def eligible_tiers(privacy: PrivacyClass) -> tuple[str, ...]:
 def place(store: Store, privacy: PrivacyClass,
           secret_sensitive_allowed_node_ids: frozenset[str] = frozenset(),
           model_id: str | None = None,
-          max_health_age_seconds: int = 90) -> str:
+          max_health_age_seconds: int = 90,
+          org_id: str = "default") -> str:
     if max_health_age_seconds < 1:
         raise ValueError("health age must be positive")
     tiers = eligible_tiers(privacy)
     cutoff = utcnow() - timedelta(seconds=max_health_age_seconds)
     with store.connect() as db:
         nodes = db.execute("""SELECT node_id, privacy_tier, airgapped, allowed_privacy_json,
-                endpoint_url, model_id, health_url, manager_id, last_health_at
+                endpoint_url, model_id, health_url, manager_id, last_health_at, owner_org_id
             FROM compute_nodes WHERE healthy=TRUE ORDER BY node_id""").fetchall()
+        visible_nodes = [node for node in nodes if visible_to(
+            db, node["owner_org_id"], org_id, "node", node["node_id"])]
     for tier in tiers:
-        for node in nodes:
+        for node in visible_nodes:
             if node["privacy_tier"] != tier:
                 continue
             if not node["endpoint_url"] or not node["model_id"]:
