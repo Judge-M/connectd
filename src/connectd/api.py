@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from connectd import __version__
 from connectd.auth import AuthService, AuthenticationError, OperatorIdentity, WorkerIdentity
 from connectd.compute import PlacementDenied, PrivacyClass, place
-from connectd.config import ConnectdConfig
+from connectd.config import ConnectdConfig, MemoryAuthority
 from connectd.governance import AuthorizationError, Governance
 from connectd.memory import MemoryLedger
 from connectd.policy import CedarPolicy
@@ -46,6 +46,10 @@ class OperatorCreate(BaseModel):
 
 class OrganizationSettingsUpdate(BaseModel):
     allow_unquoted_runpod: bool
+
+
+class MemoryAuthorityUpdate(BaseModel):
+    memory_authority: MemoryAuthority
 
 
 class ShareCreate(BaseModel):
@@ -283,11 +287,12 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                                   identity: Annotated[OperatorIdentity, Depends(admin)]):
         require_org(identity, org_id)
         with store.connect() as db:
-            row = db.execute("""SELECT org_id,allow_unquoted_runpod FROM organizations
-                WHERE org_id=?""", (org_id,)).fetchone()
+            row = db.execute("""SELECT org_id,allow_unquoted_runpod,memory_authority
+                FROM organizations WHERE org_id=?""", (org_id,)).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="organization not found")
-        return {"org_id": org_id, "allow_unquoted_runpod": bool(row["allow_unquoted_runpod"])}
+        return {"org_id": org_id, "allow_unquoted_runpod": bool(row["allow_unquoted_runpod"]),
+                "memory_authority": row["memory_authority"]}
 
     @app.put("/api/v1/orgs/{org_id}/settings")
     def update_organization_settings(org_id: str, body: OrganizationSettingsUpdate,
@@ -299,6 +304,17 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         if updated.rowcount != 1:
             raise HTTPException(status_code=404, detail="organization not found")
         return {"org_id": org_id, "allow_unquoted_runpod": body.allow_unquoted_runpod}
+
+    @app.put("/api/v1/orgs/{org_id}/memory-authority")
+    def update_memory_authority(org_id: str, body: MemoryAuthorityUpdate,
+                                identity: Annotated[OperatorIdentity, Depends(admin)]):
+        require_org_admin(identity, org_id)
+        with store.connect() as db:
+            updated = db.execute("""UPDATE organizations SET memory_authority=?
+                WHERE org_id=?""", (body.memory_authority.value, org_id))
+        if updated.rowcount != 1:
+            raise HTTPException(status_code=404, detail="organization not found")
+        return {"org_id": org_id, "memory_authority": body.memory_authority.value}
 
     @app.post("/api/v1/orgs/{org_id}/provisioning/runpod/quote")
     def quote_runpod_pod(org_id: str, body: PodQuoteRequest,

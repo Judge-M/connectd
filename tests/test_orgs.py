@@ -136,6 +136,17 @@ class OrganizationTests(unittest.TestCase):
             settings_path = f"/api/v1/orgs/{org_a}/settings"
             self.assertFalse(client.get(settings_path, headers=admin_a).json()[
                 "allow_unquoted_runpod"])
+            self.assertEqual(client.get(settings_path, headers=admin_a).json()[
+                "memory_authority"], "hybrid")
+            memory_path = f"/api/v1/orgs/{org_a}/memory-authority"
+            self.assertEqual(client.put(memory_path, headers=bootstrap,
+                json={"memory_authority": "human_gated"}).status_code, 403)
+            self.assertEqual(client.put(memory_path, headers=operator_a,
+                json={"memory_authority": "human_gated"}).status_code, 403)
+            self.assertEqual(client.put(memory_path, headers=admin_a,
+                json={"memory_authority": "human_gated"}).status_code, 200)
+            self.assertEqual(client.get(settings_path, headers=admin_a).json()[
+                "memory_authority"], "human_gated")
             self.assertEqual(client.put(settings_path, headers=operator_a,
                                         json={"allow_unquoted_runpod": True}).status_code, 403)
             self.assertEqual(client.put(settings_path, headers=bootstrap,
