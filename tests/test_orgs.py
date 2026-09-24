@@ -45,6 +45,14 @@ class OrganizationTests(unittest.TestCase):
                              task_a)
             self.assertEqual(client.get(f"/api/v1/tasks/{task_b}",
                                         headers=viewer_a).status_code, 404)
+            created_step = client.post(f"/api/v1/tasks/{task_a}/steps",
+                                       headers=operator_a,
+                                       json={"instruction": "Inspect files"})
+            self.assertEqual(created_step.status_code, 201)
+            self.assertEqual(len(client.get(f"/api/v1/tasks/{task_a}/steps",
+                                            headers=viewer_a).json()), 1)
+            self.assertEqual(client.get(f"/api/v1/tasks/{task_b}/steps",
+                                        headers=viewer_a).status_code, 404)
             self.assertEqual(client.post("/api/v1/tasks", headers=viewer_a,
                                          json=payload).status_code, 403)
             self.assertEqual(client.post(f"/api/v1/tasks/{task_b}/steps", headers=operator_a,

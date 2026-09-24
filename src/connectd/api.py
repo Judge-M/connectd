@@ -419,6 +419,15 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         except LeaseError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @app.get("/api/v1/tasks/{task_id}/steps")
+    def list_steps(task_id: str, identity: Annotated[OperatorIdentity, Depends(reader)]):
+        task_row(task_id, identity)
+        with store.connect() as db:
+            rows = db.execute("""SELECT step_id,task_id,step_number,instruction,status,
+                assigned_worker_id,lease_expires_at,result_summary FROM task_steps
+                WHERE task_id=? ORDER BY step_number""", (task_id,)).fetchall()
+        return [dict(row.row._mapping) for row in rows]
+
     @app.get("/api/v1/steps/{step_id}")
     def get_step(step_id: str, identity: Annotated[OperatorIdentity, Depends(reader)]):
         with store.connect() as db:
