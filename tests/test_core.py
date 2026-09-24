@@ -760,6 +760,25 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(next(row for row in tools if row["tool_id"] == "unbound")["status"],
                          "disabled_unbound")
 
+    def test_imported_tool_binding_proposal_stays_disabled(self):
+        from fastapi.testclient import TestClient
+
+        with self.store.connect() as db:
+            db.execute("""INSERT INTO tool_registry(tool_id,name,domain_path,schema_json,
+                effect_tier,active,status,origin) VALUES (?,?,?,?,?,FALSE,?,?)""",
+                ("legacy-echo", "echo", "legacy/toolconnect", '{"type":"object"}',
+                 2, "disabled_unbound", "toolconnect_etl"))
+        client = TestClient(create_app(ConnectdConfig(), self.store,
+                                      Ed25519PrivateKey.generate(), "o" * 40))
+        response = client.get("/api/v1/tools/binding-proposals",
+                              headers={"Authorization": "Bearer " + "o" * 40})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()[0]["suggested_handler_id"], "echo")
+        self.assertEqual(response.json()[0]["review_status"], "awaiting_operator_review")
+        with self.store.connect() as db:
+            self.assertFalse(db.execute(
+                "SELECT active FROM tool_registry WHERE tool_id='legacy-echo'").fetchone()[0])
+
     def test_local_node_cannot_name_external_inference_host(self):
         from fastapi.testclient import TestClient
 

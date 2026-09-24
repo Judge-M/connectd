@@ -670,6 +670,24 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                         json.dumps(body.pricing_model, sort_keys=True) if body.pricing_model else None))
         return {"tool_id": body.tool_id, "status": "active" if bound else "disabled_unbound"}
 
+    @app.get("/api/v1/tools/binding-proposals")
+    def binding_proposals(_operator: Annotated[None, Depends(operator)]):
+        with store.connect() as db:
+            rows = db.execute("""SELECT tool_id,name,domain_path,schema_json,effect_tier,origin
+                FROM tool_registry WHERE origin!='connectd' AND active=FALSE
+                ORDER BY name,tool_id""").fetchall()
+        proposals = []
+        for row in rows:
+            candidate = row["name"] if row["name"] in gateway.handlers else None
+            proposals.append({
+                "tool_id": row["tool_id"], "legacy_name": row["name"],
+                "source": row["domain_path"], "schema": json.loads(row["schema_json"]),
+                "effect_tier": row["effect_tier"],
+                "suggested_handler_id": candidate,
+                "review_status": "awaiting_operator_review" if candidate else "needs_handler",
+            })
+        return proposals
+
     @app.get("/api/v1/tools")
     def list_tools(_operator: Annotated[None, Depends(operator)]):
         with store.connect() as db:
