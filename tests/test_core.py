@@ -20,7 +20,7 @@ from connectd.worker import DirectWorker, Ticket
 from connectd.launcher import SecurityBoundaryViolation, WorkerLauncher, select_runtime
 from connectd.workbench import LocalWorkbench
 from connectd.worker import LocalAuthority, WorkerError
-from connectd.dispatch import StepDispatcher
+from connectd.dispatch import DispatchError, StepDispatcher, validate_proxy_url
 from connectd.worker import WorkerReport
 from connectd.model_proxy import create_model_proxy
 
@@ -322,7 +322,8 @@ class CoreTests(unittest.TestCase):
                               json={"instruction": "Read a file"}).json()["step_id"]
         client.post("/api/v1/compute/nodes", headers=auth, json={
             "node_id": "local", "provider_type": "llama", "privacy_tier": "local_only",
-            "airgapped": True, "billing_mode": "free"})
+            "airgapped": True, "billing_mode": "free", "endpoint_url": "http://127.0.0.1:8080",
+            "model_id": "fake"})
 
         class FakeLauncher:
             def run(self, payload, worktree, profile, effect_tier, timeout_seconds):
@@ -371,7 +372,7 @@ class CoreTests(unittest.TestCase):
                               json={"instruction": "Inspect a file"}).json()["step_id"]
         client.post("/api/v1/compute/nodes", headers=operator, json={"node_id": "local",
             "provider_type": "vllm", "privacy_tier": "local_only", "airgapped": True,
-            "billing_mode": "free"})
+            "billing_mode": "free", "endpoint_url": "http://127.0.0.1:8080", "model_id": "fake"})
 
         class FakeLauncher:
             def run(self, payload, _worktree, _profile, _effect_tier, _timeout):
@@ -385,6 +386,38 @@ class CoreTests(unittest.TestCase):
         with self.store.connect() as db:
             self.assertEqual(db.execute("SELECT resolved_tool_id FROM routing_decisions").fetchone()[0],
                              "workbench")
+
+    def test_paid_model_cannot_bypass_proxy_with_direct_url(self):
+        from fastapi.testclient import TestClient
+
+        config = ConnectdConfig(worker_model={"base_url": "http://127.0.0.1:8080",
+                                               "model_id": "paid-model", "uses_proxy": False})
+        token = "o" * 40
+        client = TestClient(create_app(config, self.store, Ed25519PrivateKey.generate(), token),
+                            base_url="http://127.0.0.1:8790")
+        operator = {"Authorization": "Bearer " + token}
+        task_id = client.post("/api/v1/tasks", headers=operator, json={
+            "title": "Paid", "privacy_class": "public", "memory_scope": "repo:test"}).json()["task_id"]
+        step_id = client.post(f"/api/v1/tasks/{task_id}/steps", headers=operator,
+                              json={"instruction": "Analyze"}).json()["step_id"]
+        registered = client.post("/api/v1/compute/nodes", headers=operator, json={
+            "node_id": "paid-local", "provider_type": "metered", "privacy_tier": "local_only",
+            "billing_mode": "paid", "endpoint_url": "http://127.0.0.1:8080",
+            "model_id": "paid-model", "pricing": {"input_rate_per_1k_tokens": "0.10",
+                "output_rate_per_1k_tokens": "0.20", "max_total_tokens": 1000,
+                "max_cost_per_request": "0.20"}})
+        self.assertEqual(registered.status_code, 201, registered.text)
+        with self.assertRaises(DispatchError):
+            StepDispatcher(config, "http://127.0.0.1:8790", token, client=client).run_step(
+                task_id, step_id, Path(__file__).parents[1] / "work", "workbench")
+
+    def test_proxy_url_cannot_expose_worker_token_to_external_host(self):
+        validate_proxy_url("http://127.0.0.1:8090", 8090)
+        validate_proxy_url("http://model-api:8090", 8090)
+        for url in ("https://external.example:8090", "http://model-engine:8090",
+                    "http://127.0.0.1:8091", "http://127.0.0.1:8090/other"):
+            with self.assertRaises(DispatchError):
+                validate_proxy_url(url, 8090)
 
     def test_model_proxy_authenticates_worker_and_strips_bearer(self):
         import httpx

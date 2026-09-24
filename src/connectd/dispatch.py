@@ -16,6 +16,19 @@ class DispatchError(Exception):
     pass
 
 
+def validate_proxy_url(url: str, port: int) -> None:
+    try:
+        parsed = urlsplit(url)
+        valid = (parsed.scheme in {"http", "https"} and
+                 parsed.hostname in {"localhost", "127.0.0.1", "model-api"} and
+                 parsed.port == port and not parsed.username and not parsed.password and
+                 not parsed.path.rstrip("/") and not parsed.query and not parsed.fragment)
+    except ValueError:
+        valid = False
+    if not valid:
+        raise DispatchError("worker model proxy must use the configured local proxy endpoint")
+
+
 def stable_uuid(value: str) -> UUID:
     try:
         return UUID(value)
@@ -57,10 +70,19 @@ class StepDispatcher:
         model_id = node["model_id"] or self.config.worker_model.model_id
         if not model_url or not model_id:
             raise DispatchError("a capable worker model endpoint and model ID must be configured")
-        if placement["privacy_tier"] != "local_only" and not self.config.worker_model.uses_proxy:
-            raise DispatchError("remote inference requires the authenticated model proxy")
+        if not self.config.worker_model.uses_proxy:
+            if node["billing_mode"] != "free" or placement["privacy_tier"] != "local_only":
+                raise DispatchError("paid and remote inference require the authenticated model proxy")
+            if urlsplit(model_url).hostname not in self.config.model_api.allowed_local_hosts:
+                raise DispatchError("direct inference endpoint is not an allowed local host")
+            if (not node["endpoint_url"] or not node["model_id"] or
+                    node["endpoint_url"].rstrip("/").removesuffix("/v1") !=
+                    model_url.rstrip("/").removesuffix("/v1") or node["model_id"] != model_id):
+                raise DispatchError("direct inference must match the registered free local node")
         if profile.grant_mode == GrantMode.STRICT_ED25519:
             model_url = f"http://model-api:{self.config.model_api.port}"
+        if self.config.worker_model.uses_proxy:
+            validate_proxy_url(model_url, self.config.model_api.port)
         if task["privacy_class"] == "secret_sensitive":
             if (placement["privacy_tier"] != "local_only" and
                     placement["node_id"] not in self.config.secret_sensitive_allowed_node_ids):
