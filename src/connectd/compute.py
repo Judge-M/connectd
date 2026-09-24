@@ -25,14 +25,21 @@ def eligible_tiers(privacy: PrivacyClass) -> tuple[str, ...]:
     return ("local_only", "private_rented", "external")
 
 
-def place(store: Store, privacy: PrivacyClass, secret_sensitive_allowed_node_ids: frozenset[str] = frozenset()) -> str:
+def place(store: Store, privacy: PrivacyClass,
+          secret_sensitive_allowed_node_ids: frozenset[str] = frozenset(),
+          model_id: str | None = None) -> str:
     tiers = eligible_tiers(privacy)
     with store.connect() as db:
-        nodes = db.execute("""SELECT node_id, privacy_tier, airgapped, allowed_privacy_json
+        nodes = db.execute("""SELECT node_id, privacy_tier, airgapped, allowed_privacy_json,
+                endpoint_url, model_id
             FROM compute_nodes WHERE healthy=TRUE ORDER BY node_id""").fetchall()
     for tier in tiers:
         for node in nodes:
             if node["privacy_tier"] != tier:
+                continue
+            if not node["endpoint_url"] or not node["model_id"]:
+                continue
+            if model_id is not None and node["model_id"] != model_id:
                 continue
             if node["allowed_privacy_json"] and privacy.value not in json.loads(node["allowed_privacy_json"]):
                 continue

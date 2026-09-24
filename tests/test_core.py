@@ -154,10 +154,12 @@ class CoreTests(unittest.TestCase):
 
     def test_privacy_gate(self):
         with self.store.connect() as db:
-            db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,airgapped)
-                VALUES (?,?,?,?,?)""", ("cloud", "api", "external", True, False))
-            db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,airgapped)
-                VALUES (?,?,?,?,?)""", ("local", "llama", "local_only", True, True))
+            db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,airgapped,
+                endpoint_url,model_id) VALUES (?,?,?,?,?,?,?)""",
+                ("cloud", "api", "external", True, False, "https://gpu.example/v1", "smart-model"))
+            db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,airgapped,
+                endpoint_url,model_id) VALUES (?,?,?,?,?,?,?)""",
+                ("local", "llama", "local_only", True, True, "http://127.0.0.1:8090/v1", "local-model"))
         self.assertEqual(place(self.store, PrivacyClass.PUBLIC), "local")
         self.assertEqual(place(self.store, PrivacyClass.REPO_SENSITIVE), "local")
         self.assertEqual(place(self.store, PrivacyClass.SECRET_SENSITIVE), "local")
@@ -166,6 +168,18 @@ class CoreTests(unittest.TestCase):
         with self.assertRaises(PlacementDenied):
             place(self.store, PrivacyClass.SECRET_SENSITIVE)
         self.assertEqual(place(self.store, PrivacyClass.SECRET_SENSITIVE, frozenset({"cloud"})), "cloud")
+
+    def test_placement_requires_usable_endpoint_and_requested_model(self):
+        with self.store.connect() as db:
+            db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,airgapped)
+                VALUES (?,?,?,?,?)""", ("empty-local", "llama", "local_only", True, False))
+            db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,airgapped,
+                endpoint_url,model_id) VALUES (?,?,?,?,?,?,?)""",
+                ("remote", "manager", "private_rented", True, False,
+                 "https://gpu.example/v1", "chosen-model"))
+        self.assertEqual(place(self.store, PrivacyClass.PUBLIC, model_id="chosen-model"), "remote")
+        with self.assertRaises(PlacementDenied):
+            place(self.store, PrivacyClass.PUBLIC, model_id="missing-model")
 
     def test_bounded_router_and_one_schema(self):
         tree = json.loads((Path(__file__).parents[1] / "config" / "oag_tree_registry.json").read_text())["trees"]["tool_routing"]

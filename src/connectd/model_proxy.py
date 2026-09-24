@@ -42,7 +42,8 @@ def create_model_proxy(config: ConnectdConfig, store: Store, operator_token: str
             raise HTTPException(status_code=404, detail="task not found")
         try:
             node_id = place(store, PrivacyClass(task["privacy_class"]),
-                            config.secret_sensitive_allowed_node_ids)
+                            config.secret_sensitive_allowed_node_ids,
+                            model_id=payload.get("model"))
         except PlacementDenied as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         with store.connect() as db:
