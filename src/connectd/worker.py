@@ -57,12 +57,14 @@ class DirectWorker:
     def __init__(self, model_base_url: str, model_id: str,
                  invoke_capability: Callable[[str, dict], Any],
                  client: httpx.Client | None = None,
-                 model_auth_token: str | None = None):
+                 model_auth_token: str | None = None,
+                 max_output_tokens: int | None = None):
         self.model_base_url = model_base_url.rstrip("/")
         self.model_id = model_id
         self.invoke_capability = invoke_capability
         self.client = client or httpx.Client(timeout=60)
         self.model_auth_token = model_auth_token
+        self.max_output_tokens = max_output_tokens
 
     def run(self, ticket: Ticket, worker_id: UUID, tool: dict, max_turns: int = 5) -> WorkerReport:
         if not 1 <= max_turns <= 5:
@@ -84,9 +86,13 @@ class DirectWorker:
         for _turn in range(max_turns):
             headers = ({"Authorization": f"Bearer {self.model_auth_token}"}
                        if self.model_auth_token else {})
-            response = self.client.post(f"{self.model_base_url}/v1/chat/completions", headers=headers, json={
+            request = {
                 "model": self.model_id, "messages": messages, "tools": [tool], "tool_choice": "auto",
-            })
+            }
+            if self.max_output_tokens is not None:
+                request["max_tokens"] = self.max_output_tokens
+            response = self.client.post(f"{self.model_base_url}/v1/chat/completions", headers=headers,
+                                        json=request)
             response.raise_for_status()
             try:
                 message = response.json()["choices"][0]["message"]

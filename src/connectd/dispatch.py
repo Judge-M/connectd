@@ -10,6 +10,7 @@ from connectd.config import ConnectdConfig, GrantMode
 from connectd.launcher import WorkerInput, WorkerLauncher
 from connectd.worker import Ticket, WorkerReport
 from connectd.workbench import WORKBENCH_TOOL
+from connectd.spend import SpendError, model_quote
 
 
 class DispatchError(Exception):
@@ -85,6 +86,12 @@ class StepDispatcher:
             model_url = f"http://model-api:{self.config.model_api.port}"
         if self.config.worker_model.uses_proxy:
             validate_proxy_url(model_url, self.config.model_api.port)
+        max_output_tokens = None
+        if node["billing_mode"] == "paid":
+            try:
+                max_output_tokens = model_quote(node["pricing_model"]).max_total_tokens
+            except SpendError as exc:
+                raise DispatchError("paid node has invalid registry pricing") from exc
         if task["privacy_class"] == "secret_sensitive":
             if (placement["privacy_tier"] != "local_only" and
                     placement["node_id"] not in self.config.secret_sensitive_allowed_node_ids):
@@ -131,7 +138,8 @@ class StepDispatcher:
         payload = WorkerInput(ticket=ticket, worker_id=worker_id, task_id=task_id, tool=tool,
                               model_base_url=model_url, model_id=model_id,
                               control_plane_url=worker_control_url, worker_token=worker_token,
-                              model_api_auth=self.config.worker_model.uses_proxy)
+                              model_api_auth=self.config.worker_model.uses_proxy,
+                              max_output_tokens=max_output_tokens)
         try:
             report = self.launcher.run(payload, worktree, profile, effect_tier, timeout_seconds)
         except Exception as exc:

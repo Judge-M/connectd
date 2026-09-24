@@ -29,6 +29,7 @@ class WorkerInput(BaseModel):
     control_plane_url: str
     worker_token: str
     model_api_auth: bool = False
+    max_output_tokens: int | None = Field(default=None, ge=1)
     max_turns: int = Field(default=5, ge=1, le=5)
 
 

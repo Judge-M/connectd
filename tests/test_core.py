@@ -252,6 +252,7 @@ class CoreTests(unittest.TestCase):
         def respond(request):
             payload = json.loads(request.content)
             self.assertEqual(len(payload["tools"]), 1)
+            self.assertEqual(payload["max_tokens"], 1000)
             seen.append(payload)
             if len(seen) == 1:
                 return httpx.Response(200, json={"choices": [{"message": {"content": None, "tool_calls": [{
@@ -263,7 +264,7 @@ class CoreTests(unittest.TestCase):
         ticket = Ticket(id=ticket_id, conversation_id=conversation_id, objective="Echo hi",
                         deliverable="Summary", authority={"external_capabilities": ["echo"]})
         worker = DirectWorker("http://127.0.0.1:8080", "local", lambda name, args: calls.append((name, args)) or {"ok": True},
-                              httpx.Client(transport=httpx.MockTransport(respond)))
+                              httpx.Client(transport=httpx.MockTransport(respond)), max_output_tokens=1000)
         report = worker.run(ticket, worker_id, {"type": "function", "function": {
             "name": "echo", "description": "Echo", "parameters": {"type": "object"}}})
         self.assertEqual(report.status, "completed")
@@ -410,6 +411,21 @@ class CoreTests(unittest.TestCase):
         with self.assertRaises(DispatchError):
             StepDispatcher(config, "http://127.0.0.1:8790", token, client=client).run_step(
                 task_id, step_id, Path(__file__).parents[1] / "work", "workbench")
+
+        class FakeLauncher:
+            def run(self, payload, _worktree, _profile, _effect_tier, _timeout):
+                self_test.assertEqual(payload.max_output_tokens, 1000)
+                self_test.assertTrue(payload.model_api_auth)
+                return WorkerReport(worker_id=payload.worker_id, ticket_id=payload.ticket.id,
+                    conversation_id=payload.ticket.conversation_id, status="completed", summary="Done")
+
+        self_test = self
+        proxied = ConnectdConfig(worker_model={"base_url": "http://127.0.0.1:8090",
+                                               "model_id": "paid-model", "uses_proxy": True})
+        report = StepDispatcher(proxied, "http://127.0.0.1:8790", token,
+                                client=client, launcher=FakeLauncher()).run_step(
+            task_id, step_id, Path(__file__).parents[1] / "work", "workbench")
+        self.assertEqual(report.status, "completed")
 
     def test_proxy_url_cannot_expose_worker_token_to_external_host(self):
         validate_proxy_url("http://127.0.0.1:8090", 8090)

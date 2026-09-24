@@ -14,7 +14,8 @@ def main() -> None:
                   if payload.tool["function"]["name"] == "workbench"
                   else HttpCapabilityClient(payload.control_plane_url, payload.worker_token, payload.task_id))
     worker = DirectWorker(payload.model_base_url, payload.model_id, capability,
-                          model_auth_token=payload.worker_token if payload.model_api_auth else None)
+                          model_auth_token=payload.worker_token if payload.model_api_auth else None,
+                          max_output_tokens=payload.max_output_tokens)
     report = worker.run(payload.ticket, payload.worker_id, payload.tool, payload.max_turns)
     sys.stdout.write(report.model_dump_json())
 

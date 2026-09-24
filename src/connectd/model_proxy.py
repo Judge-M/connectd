@@ -59,11 +59,14 @@ def create_model_proxy(config: ConnectdConfig, store: Store, operator_token: str
         reservation_id = None
         quote = None
         if node["billing_mode"] == "paid":
+            allowed_fields = {"model", "messages", "tools", "tool_choice", "max_tokens", "stream"}
+            if set(payload) - allowed_fields:
+                raise HTTPException(status_code=422, detail="paid inference payload contains unsupported fields")
             try:
                 quote = model_quote(node["pricing_model"])
             except SpendError as exc:
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
-            output_limit = payload.get("max_tokens", payload.get("max_completion_tokens"))
+            output_limit = payload.get("max_tokens")
             if not isinstance(output_limit, int) or isinstance(output_limit, bool) or not 0 < output_limit <= quote.max_total_tokens:
                 raise HTTPException(status_code=422, detail="paid inference requires a bounded max_tokens")
         elif node["billing_mode"] != "free":
