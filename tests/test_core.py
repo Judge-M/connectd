@@ -75,6 +75,19 @@ class CoreTests(unittest.TestCase):
         fast = Governance(self.store, Ed25519PrivateKey.generate(), ConnectdConfig().profile("dev_fast"))
         self.assertEqual(fast.issue("task-1", "worker-1", "cloud_deploy", {})["tool_id"], "cloud_deploy")
 
+    def test_task_finishes_only_after_all_steps(self):
+        manager = TaskManager(self.store)
+        first = manager.add_step("task-1", "First")
+        second = manager.add_step("task-1", "Second")
+        manager.complete(manager.claim(first, "worker-1"), "done")
+        with self.store.connect() as db:
+            self.assertEqual(db.execute("SELECT status FROM tasks WHERE task_id='task-1'").fetchone()[0],
+                             "active")
+        manager.finish(manager.claim(second, "worker-2"), "failed", "failed")
+        with self.store.connect() as db:
+            row = db.execute("SELECT status,is_terminal FROM tasks WHERE task_id='task-1'").fetchone()
+            self.assertEqual((row["status"], bool(row["is_terminal"])), ("failed", True))
+
     def test_balanced_cedar_and_prod_operator_approval(self):
         policy = CedarPolicy('permit(principal, action == Action::"invoke", resource == Tool::"cloud_deploy");')
         balanced = Governance(self.store, Ed25519PrivateKey.generate(), ConnectdConfig().profile("balanced"), policy.permit)
@@ -329,6 +342,8 @@ class CoreTests(unittest.TestCase):
         with self.store.connect() as db:
             self.assertEqual(db.execute("SELECT status FROM task_steps WHERE step_id=?",
                                         (step_id,)).fetchone()[0], "done")
+            self.assertEqual(db.execute("SELECT status,is_terminal FROM tasks WHERE task_id=?",
+                                        (task_id,)).fetchone()["status"], "completed")
 
     def test_dispatch_uses_system_one_route_by_default(self):
         from fastapi.testclient import TestClient

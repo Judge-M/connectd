@@ -88,6 +88,14 @@ class TaskManager:
                 (status, summary, lease.step_id, lease.worker_id, lease.token, utcnow().isoformat()))
             if result.rowcount != 1:
                 raise LeaseError("lease missing, stale, or expired")
+            remaining = db.execute("""SELECT COUNT(*) FROM task_steps WHERE task_id=?
+                AND status IN ('pending','claimed')""", (lease.task_id,)).fetchone()[0]
+            if remaining == 0:
+                failed = db.execute("""SELECT COUNT(*) FROM task_steps WHERE task_id=?
+                    AND status='failed'""", (lease.task_id,)).fetchone()[0]
+                db.execute("""UPDATE tasks SET status=?,is_terminal=TRUE,updated_at=?
+                    WHERE task_id=? AND is_terminal=FALSE""",
+                    ("failed" if failed else "completed", utcnow().isoformat(), lease.task_id))
             db.commit()
 
     def record_artifact(self, task_id: str, kind: str, path: str, content: bytes) -> str:
