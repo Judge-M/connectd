@@ -51,12 +51,16 @@ class LegacyEtlTests(unittest.TestCase):
                  ("INSERT INTO meta VALUES (?,?)", ("audit_head_hash", digest))])
             make_source(brain,
                 "CREATE TABLE sources(id INTEGER,hash TEXT,path TEXT,url TEXT);"
-                "CREATE TABLE claims(id INTEGER,text TEXT,source_id INTEGER,status TEXT,promoted_by TEXT,origin TEXT,scope_type TEXT,scope_id TEXT,created_at TEXT);",
+                "CREATE TABLE claims(id INTEGER,text TEXT,source_id INTEGER,status TEXT,promoted_by TEXT,origin TEXT,scope_type TEXT,scope_id TEXT,created_at TEXT);"
+                "CREATE TABLE contradictions(id INTEGER,claim_a INTEGER,claim_b INTEGER,status TEXT);",
                 [("INSERT INTO sources VALUES (?,?,?,?)", (1, "abc", "source.md", None)),
                  ("INSERT INTO claims VALUES (?,?,?,?,?,?,?,?,?)", (1, "trusted", 1, "promoted",
                    "human", "human", "repo", "old", at)),
                  ("INSERT INTO claims VALUES (?,?,?,?,?,?,?,?,?)", (2, "pending", 1, "pending",
-                   None, "agent", "repo", "old", at))])
+                   None, "agent", "repo", "old", at)),
+                 ("INSERT INTO claims VALUES (?,?,?,?,?,?,?,?,?)", (3, "promoted but contradicted", 1,
+                   "promoted", "human", "human", "repo", "old", at)),
+                 ("INSERT INTO contradictions VALUES (?,?,?,?)", (1, 2, 3, "open"))])
             sources = LegacySources(agent, gov, tools, brain)
             before = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in (agent, gov, tools, brain)}
             store = Store(root / "unified.db")

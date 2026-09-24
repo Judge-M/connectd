@@ -444,7 +444,9 @@ class CoreTests(unittest.TestCase):
 
         operator_token = "o" * 40
         client = TestClient(create_app(ConnectdConfig(), self.store,
-                                      Ed25519PrivateKey.generate(), operator_token))
+                                      Ed25519PrivateKey.generate(), operator_token,
+                                      tool_handlers={"git_status": lambda args: {"ok": True},
+                                                     "legacy-bound": lambda args: {"ok": True}}))
         operator = {"Authorization": "Bearer " + operator_token}
         task_id = client.post("/tasks", headers=operator,
                               json={"title": "Legacy task"}).json()["task_id"]
@@ -461,6 +463,14 @@ class CoreTests(unittest.TestCase):
                                      "context": {"task_id": task_id}})
         self.assertEqual(response.status_code, 201, response.text)
         self.assertTrue(response.json()["execution"]["gateway_required"])
+        with self.store.connect() as db:
+            db.execute("""INSERT INTO tool_registry(tool_id,name,domain_path,schema_json,
+                effect_tier,active) VALUES (?,?,?,?,?,TRUE)""",
+                ("legacy-bound", "legacy_read", "legacy/service", "{}", 0))
+        response = client.post("/authorize", headers=worker, json={
+            "source_id": "service", "name": "legacy_read", "context": {"task_id": task_id}})
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["grant"]["tool_id"], "legacy-bound")
 
     def test_registry_does_not_activate_unbound_handler(self):
         from fastapi.testclient import TestClient

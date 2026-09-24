@@ -82,6 +82,7 @@ class GrantRequest(BaseModel):
 
 class LegacyGrantRequest(BaseModel):
     tool_id: str | None = None
+    source_id: str | None = None
     name: str | None = None
     args: dict = Field(default_factory=dict)
     context: dict = Field(default_factory=dict)
@@ -555,6 +556,8 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
     def authorize(body: GrantRequest, identity: Annotated[WorkerIdentity, Depends(worker)]):
         if identity.task_id != body.task_id:
             raise HTTPException(status_code=403, detail="wrong task scope")
+        if body.tool_id not in gateway.handlers:
+            raise HTTPException(status_code=409, detail="tool has no bound execution handler")
         try:
             return governance.issue(body.task_id, identity.worker_id, body.tool_id, body.args)
         except AuthorizationError as exc:
@@ -567,7 +570,18 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                 "message": "context.task_id is required for live authorization"})
         if task_id != identity.task_id:
             raise HTTPException(status_code=403, detail="wrong task scope")
-        tool_id = body.tool_id or body.name
+        tool_id = body.tool_id
+        if tool_id is None and body.source_id and body.name:
+            with store.connect() as db:
+                matches = db.execute("""SELECT tool_id FROM tool_registry WHERE domain_path=?
+                    AND name=? AND active=TRUE""",
+                    (f"legacy/{body.source_id}", body.name)).fetchall()
+            if len(matches) != 1:
+                raise HTTPException(status_code=404 if not matches else 409,
+                                    detail="legacy tool is missing, inactive, or ambiguous")
+            tool_id = matches[0]["tool_id"]
+        elif tool_id is None:
+            tool_id = body.name
         if not tool_id:
             raise HTTPException(status_code=400, detail="tool_id or name is required")
         return task_id, tool_id
@@ -575,6 +589,8 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
     @app.post("/authorize", status_code=201)
     def legacy_authorize(body: LegacyGrantRequest, identity: Annotated[WorkerIdentity, Depends(worker)]):
         task_id, tool_id = legacy_grant_input(body, identity)
+        if tool_id not in gateway.handlers:
+            raise HTTPException(status_code=409, detail="tool has no bound execution handler")
         try:
             grant = governance.issue(task_id, identity.worker_id, tool_id, body.args)
         except AuthorizationError as exc:

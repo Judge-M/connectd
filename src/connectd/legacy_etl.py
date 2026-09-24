@@ -285,8 +285,14 @@ def migrate_legacy(store: Store, sources: LegacySources, *, missing_privacy_clas
             if head_seq is not None and int(head_seq) != (row["seq"] if counts["tool_audit"] else 0):
                 raise LegacyImportError("ToolConnect audit head sequence differs from imported chain")
             sources_by_id = {row["id"]: row for row in _rows(brain, "sources")}
+            contradicted_ids = set()
+            for contradiction in _rows(brain, "contradictions"):
+                if contradiction.get("status") == "open":
+                    contradicted_ids.add(contradiction["claim_a"])
+                    contradicted_ids.add(contradiction["claim_b"])
             for row in _rows(brain, "claims"):
-                if row.get("status") != "promoted":
+                if (row.get("status") != "promoted" or row["id"] in contradicted_ids or
+                        ("is_trusted" in row and not row["is_trusted"])):
                     continue
                 source = sources_by_id.get(row["source_id"])
                 if source is None:
