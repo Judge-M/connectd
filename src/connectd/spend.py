@@ -58,7 +58,7 @@ def model_quote(pricing: str | dict) -> ModelQuote:
             raise ValueError("invalid pricing")
         worst_usd = Decimal(maximum) * max(input_rate, output_rate) / Decimal(1000)
         reserve = int((worst_usd * 100).to_integral_value(rounding="ROUND_CEILING"))
-        if reserve > cap:
+        if reserve <= 0 or reserve > cap:
             raise ValueError("token cap and rates exceed max_cost_per_request")
         return ModelQuote(reserve, maximum, input_rate, output_rate, cap)
     except (TypeError, KeyError, ValueError, ArithmeticError) as exc:

@@ -129,6 +129,9 @@ class ConnectdConfig(BaseModel):
     def validate_default(self) -> "ConnectdConfig":
         if self.default_execution_profile not in self.execution_profiles:
             raise ValueError("default_execution_profile is absent from execution_profiles")
+        if (self.default_execution_profile == "prod_secure" and
+                not self.worker_model.uses_proxy):
+            raise ValueError("prod_secure requires the authenticated model proxy")
         for profile in self.execution_profiles.values():
             if profile.grant_mode == GrantMode.STRICT_ED25519 and profile.worker_runtime == WorkerRuntime.SUBPROCESS:
                 raise ValueError("strict Ed25519 profile cannot use subprocess workers")

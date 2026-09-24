@@ -59,6 +59,8 @@ class StepDispatcher:
         if task["is_terminal"]:
             raise DispatchError("terminal tasks cannot be dispatched")
         profile = self.config.profile(task["execution_profile"])
+        if profile.grant_mode == GrantMode.STRICT_ED25519 and not self.config.worker_model.uses_proxy:
+            raise DispatchError("prod_secure requires the authenticated model proxy")
         worker_id = uuid4()
         worker_token = self._request("POST", f"/api/v1/tasks/{task_id}/worker-sessions",
                                      self.operator_token, json={"worker_id": str(worker_id),

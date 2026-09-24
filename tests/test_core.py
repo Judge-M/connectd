@@ -550,6 +550,16 @@ class CoreTests(unittest.TestCase):
                                      "billing_mode": "free", "model_id": "capable",
                                      "endpoint_url": "http://public.example:8090"})
         self.assertEqual(response.status_code, 422)
+        zero_rate = client.post("/api/v1/compute/nodes",
+            headers={"Authorization": "Bearer " + token},
+            json={"node_id": "zero-price", "provider_type": "metered",
+                  "privacy_tier": "local_only", "billing_mode": "paid",
+                  "endpoint_url": "http://127.0.0.1:8090", "model_id": "capable",
+                  "pricing": {"input_rate_per_1k_tokens": 0,
+                              "output_rate_per_1k_tokens": 0,
+                              "max_total_tokens": 1000,
+                              "max_cost_per_request": "0.10"}})
+        self.assertEqual(zero_rate.status_code, 422)
 
 
 if __name__ == "__main__":

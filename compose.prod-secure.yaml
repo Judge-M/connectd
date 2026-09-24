@@ -24,12 +24,20 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8790/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
 
   model-api:
     build:
       context: .
       dockerfile: Dockerfile.daemon
     hostname: model-api
+    depends_on:
+      connectd-gateway:
+        condition: service_healthy
     networks:
       isolated:
         aliases: [model-api]
