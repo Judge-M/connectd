@@ -22,7 +22,7 @@ Every paid model node declares registry pricing, a per-request USD cap, a total 
 
 The default worker loop is native Python using `httpx`, `pydantic`, and OpenAI `/v1/chat/completions` tool calls. It has a bounded turn count, receives only promoted context, and returns a compact task report. `smolagents` is an optional adapter, not a mandatory dependency.
 
-Organization-scoped local users are bootstrapped by the existing operator token. The `admin`, `operator`, and `viewer` roles control user management, task writes, and task reads; operator tokens are stored only as SHA-256 hashes and can be revoked. Tasks and memory claims carry an organization key so context and task timelines remain tenant-scoped. The bootstrap token can inspect and administer the installation.
+Organization-scoped local users are bootstrapped by the existing operator token. The `admin`, `operator`, and `viewer` roles control user management, task writes, and task reads; operator tokens are stored only as SHA-256 hashes and can be revoked. Tasks and memory claims carry an organization key so context and task timelines remain tenant-scoped. The bootstrap token can inspect and administer the installation. Memory-promotion authority is a configurable role policy, not a fixed product-wide choice. Organizations control sharing of tool and compute registry resources with other organizations at both individual-record and whole-registry scope; sharing never transfers ownership or changes a task's own budget and privacy policy.
 
 ## 3. Execution profiles and network boundaries
 
@@ -30,7 +30,7 @@ Organization-scoped local users are bootstrapped by the existing operator token.
 | --- | --- | --- | --- |
 | `dev_fast` | Subprocess or Docker | Auto-allow; signed single-use grant still records the effect | Standard bridge |
 | `balanced` | Subprocess or Docker; Tier 2 upgrades to Docker | Deterministic Cedar `PERMIT` signs automatically, except an explicit human-approval rule or spend threshold | Standard bridge |
-| `prod_secure` | Docker, Podman, or another configured container boundary; no subprocess | Exact operator approval plus policy permit before signing | User-defined `--internal` network |
+| `prod_secure` | Docker, Podman, or gVisor; Firecracker through a configured Linux/KVM adapter; no subprocess | Exact operator approval plus policy permit before signing | User-defined `--internal` network |
 
 `prod_secure` workers have no WAN route. The Tool Gateway and model API run as containers on the internal network. Workers resolve `connectd-gateway:8790` and `model-api:8090` through container DNS, with no hardcoded bridge IP. External effects pass through the Tool Gateway and require an Ed25519 grant bound to task, principal, tool, exact canonical arguments, expiry, and one redemption attempt. The gateway verifies at the point of effect and writes the audit outcome. The control-plane container has no Docker socket; a host-side launcher starts workers.
 
@@ -48,6 +48,14 @@ V1 supports **both SQLite and PostgreSQL** at runtime through one relational sch
 Unpromoted candidates remain in their source databases. Imported historical grants have `status='legacy_expired'` and can never be redeemed. The importer retains source identity mappings, records payload hashes, and validates foreign keys. A repeated import is rejected before changing destination records. The CLI requires explicit privacy classification for old tasks with missing metadata and explicit audit payload retention mode. New tool registry rows remain disabled until a reviewed execution handler is bound and an operator activates them.
 
 Memory claims retain numeric and labeled confidence, validity dates, tags, supersession, and source provenance. Operator recall and the control workspace include those fields and open contradiction warnings, including stale, superseded, and pending claims for audit. Worker context uses only currently valid, trusted promoted claims from the task or global scope, with a brief projection when requested. The SQLite and PostgreSQL schema migration preserves the original V1 table layout as revision `0001` and adds these fields in `0002` so existing databases can upgrade.
+
+## Expanded V1 operator and infrastructure surfaces
+
+The Control workspace supports local organization onboarding, role-scoped users and revocation, task and step management, budget controls, audit timelines, node health, and imported-tool binding review. Imported tools remain disabled while the operator reviews a proposed binding. A binding proposal alone never activates a handler.
+
+Cross-machine compute discovery polls configured mTLS node managers rather than accepting LAN advertisements. The provider-neutral Pod lifecycle contract has a RunPod reference adapter. Provisioning requires a price quote by default, and an operator-controlled switch may enable the create-then-verify-and-delete-on-over-cap path. RunPod's GPU catalog supplies a read-only GPU list price, while the actual Pod rate is reported after creation; storage is billed separately. The platform must not present the catalog figure as a binding total Pod price.
+
+gVisor is the initial stronger container sandbox and fails closed when its runtime is missing. Firecracker is an explicit adapter contract for Linux hosts with KVM. Workers stay short-lived and bounded; persistent streaming sessions and real-time voice loops are outside V1.
 
 ## 5. Delivery phases
 
