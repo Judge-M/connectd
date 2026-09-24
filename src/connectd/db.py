@@ -6,8 +6,25 @@ from sqlalchemy.engine import Engine
 
 metadata = MetaData()
 
+organizations = Table("organizations", metadata,
+    Column("org_id", String, primary_key=True),
+    Column("name", String, nullable=False),
+    Column("created_at", String, nullable=False),
+)
+operator_users = Table("operator_users", metadata,
+    Column("user_id", String, primary_key=True),
+    Column("org_id", String, ForeignKey("organizations.org_id"), nullable=False),
+    Column("display_name", String, nullable=False),
+    Column("role", String, nullable=False),
+    Column("token_hash", String, nullable=False, unique=True),
+    Column("active", Boolean, nullable=False, server_default="1"),
+    Column("created_at", String, nullable=False),
+    CheckConstraint("role IN ('admin','operator','viewer')"),
+)
+
 tasks = Table("tasks", metadata,
     Column("task_id", String, primary_key=True),
+    Column("org_id", String, ForeignKey("organizations.org_id"), nullable=False, server_default="default"),
     Column("title", Text, nullable=False),
     Column("goal", Text, nullable=False, server_default=""),
     Column("priority", String, nullable=False, server_default="normal"),
@@ -143,6 +160,8 @@ legacy_tool_audit = Table("legacy_tool_audit", metadata,
 )
 memory_claims = Table("memory_claims", metadata,
     Column("claim_id", String, primary_key=True),
+    Column("org_id", String, ForeignKey("organizations.org_id"), nullable=False,
+           server_default="default"),
     Column("scope", String, nullable=False),
     Column("claim_text", Text, nullable=False),
     Column("status", String, nullable=False, server_default="pending"),

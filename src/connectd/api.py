@@ -15,7 +15,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 from connectd import __version__
-from connectd.auth import AuthService, AuthenticationError, WorkerIdentity
+from connectd.auth import AuthService, AuthenticationError, OperatorIdentity, WorkerIdentity
 from connectd.compute import PlacementDenied, PrivacyClass, place
 from connectd.config import ConnectdConfig
 from connectd.governance import AuthorizationError, Governance
@@ -31,6 +31,15 @@ from connectd.governance import utcnow
 from connectd.control_ui import CONTROL_HTML
 from connectd.spend import SpendError, usd_to_cents
 from connectd.spend import metered_quote
+
+
+class OrganizationCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class OperatorCreate(BaseModel):
+    display_name: str = Field(min_length=1, max_length=200)
+    role: Literal["admin", "operator", "viewer"]
 
 
 class TaskCreate(BaseModel):
@@ -182,11 +191,35 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
             raise HTTPException(status_code=401, detail="bearer token required")
         return credentials.credentials
 
-    def operator(token: Annotated[str, Depends(raw_token)]) -> None:
+    def require_role(token: str, role: str) -> OperatorIdentity:
         try:
-            auth.require_operator(token)
+            return auth.require_operator(token, role)
         except AuthenticationError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    def tenant_operator(token: Annotated[str, Depends(raw_token)]) -> OperatorIdentity:
+        return require_role(token, "operator")
+
+    def operator(token: Annotated[str, Depends(raw_token)]) -> OperatorIdentity:
+        identity = require_role(token, "operator")
+        if not identity.bootstrap:
+            raise HTTPException(status_code=403, detail="global operation requires bootstrap operator")
+        return identity
+
+    def reader(token: Annotated[str, Depends(raw_token)]) -> OperatorIdentity:
+        return require_role(token, "viewer")
+
+    def admin(token: Annotated[str, Depends(raw_token)]) -> OperatorIdentity:
+        return require_role(token, "admin")
+
+    def bootstrap(identity: Annotated[OperatorIdentity, Depends(admin)]) -> OperatorIdentity:
+        if not identity.bootstrap:
+            raise HTTPException(status_code=403, detail="bootstrap operator required")
+        return identity
+
+    def require_org(identity: OperatorIdentity, org_id: str) -> None:
+        if not identity.bootstrap and identity.org_id != org_id:
+            raise HTTPException(status_code=404, detail="organization not found")
 
     def worker(token: Annotated[str, Depends(raw_token)]) -> WorkerIdentity:
         try:
@@ -194,12 +227,60 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         except AuthenticationError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    def task_row(task_id: str):
+    def task_row(task_id: str, identity: OperatorIdentity | None = None):
         with store.connect() as db:
             row = db.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
-        if row is None:
+        if row is None or (identity is not None and not identity.bootstrap and
+                           row["org_id"] != identity.org_id):
             raise HTTPException(status_code=404, detail="task not found")
         return row
+
+    @app.get("/api/v1/me")
+    def current_operator(identity: Annotated[OperatorIdentity, Depends(reader)]):
+        return identity.__dict__
+
+    @app.post("/api/v1/orgs", status_code=201)
+    def create_organization(body: OrganizationCreate,
+                            _bootstrap: Annotated[OperatorIdentity, Depends(bootstrap)]):
+        org_id = str(uuid4())
+        with store.connect() as db:
+            db.execute("INSERT INTO organizations(org_id,name,created_at) VALUES (?,?,?)",
+                       (org_id, body.name, utcnow().isoformat()))
+        return {"org_id": org_id, "name": body.name}
+
+    @app.get("/api/v1/orgs")
+    def list_organizations(_bootstrap: Annotated[OperatorIdentity, Depends(bootstrap)]):
+        with store.connect() as db:
+            rows = db.execute("SELECT * FROM organizations ORDER BY created_at").fetchall()
+        return [dict(row.row._mapping) for row in rows]
+
+    @app.post("/api/v1/orgs/{org_id}/users", status_code=201)
+    def create_operator(org_id: str, body: OperatorCreate,
+                        identity: Annotated[OperatorIdentity, Depends(admin)]):
+        require_org(identity, org_id)
+        with store.connect() as db:
+            if db.execute("SELECT 1 FROM organizations WHERE org_id=?", (org_id,)).fetchone() is None:
+                raise HTTPException(status_code=404, detail="organization not found")
+        user_id, token = auth.issue_operator(org_id, body.display_name, body.role)
+        return {"user_id": user_id, "org_id": org_id, "role": body.role, "token": token}
+
+    @app.get("/api/v1/orgs/{org_id}/users")
+    def list_operators(org_id: str, identity: Annotated[OperatorIdentity, Depends(admin)]):
+        require_org(identity, org_id)
+        with store.connect() as db:
+            rows = db.execute("""SELECT user_id,org_id,display_name,role,active,created_at
+                FROM operator_users WHERE org_id=? ORDER BY created_at""", (org_id,)).fetchall()
+        return [dict(row.row._mapping) for row in rows]
+
+    @app.delete("/api/v1/orgs/{org_id}/users/{user_id}")
+    def revoke_operator(org_id: str, user_id: str,
+                        identity: Annotated[OperatorIdentity, Depends(admin)]):
+        require_org(identity, org_id)
+        if identity.user_id == user_id:
+            raise HTTPException(status_code=409, detail="cannot revoke own token")
+        if not auth.revoke_operator(org_id, user_id):
+            raise HTTPException(status_code=404, detail="active user not found")
+        return {"user_id": user_id, "active": False}
 
     @app.get("/health")
     @app.get("/healthz")
@@ -214,34 +295,42 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         return CONTROL_HTML
 
     @app.post("/api/v1/tasks", status_code=201)
-    def create_task(body: TaskCreate, _operator: Annotated[None, Depends(operator)]):
+    def create_task(body: TaskCreate, identity: Annotated[OperatorIdentity, Depends(tenant_operator)]):
         profile_name = body.execution_profile or config.default_execution_profile
         if profile_name not in config.execution_profiles:
             raise HTTPException(status_code=422, detail="unknown execution profile")
         return {"task_id": tasks.create_task(body.title, body.privacy_class, body.memory_scope,
-                                             profile_name)}
+                                             profile_name, org_id=identity.org_id or "default",
+                                             created_by=identity.user_id)}
 
     @app.post("/tasks", status_code=201)
-    def legacy_create_task(body: LegacyTaskCreate, _operator: Annotated[None, Depends(operator)]):
+    def legacy_create_task(body: LegacyTaskCreate,
+                           identity: Annotated[OperatorIdentity, Depends(tenant_operator)]):
         profile_name = body.execution_profile or config.default_execution_profile
         if profile_name not in config.execution_profiles:
             raise HTTPException(status_code=422, detail="unknown execution profile")
         privacy = body.privacy_class or PrivacyClass(config.task_defaults.default_privacy_class)
         return {"task_id": tasks.create_task(body.title, privacy, body.memory_scope,
                 profile_name, goal=body.goal, priority=body.priority,
-                created_by=body.created_by, metadata_json=json.dumps(body.metadata, sort_keys=True))}
+                created_by=identity.user_id, metadata_json=json.dumps(body.metadata, sort_keys=True),
+                org_id=identity.org_id or "default")}
 
     @app.get("/api/v1/tasks/{task_id}")
-    def get_task(task_id: str, _operator: Annotated[None, Depends(operator)]):
-        return dict(task_row(task_id).row._mapping)
+    def get_task(task_id: str, identity: Annotated[OperatorIdentity, Depends(reader)]):
+        return dict(task_row(task_id, identity).row._mapping)
 
     @app.get("/api/v1/tasks")
     @app.get("/work_requests")
-    def list_tasks(_operator: Annotated[None, Depends(operator)], limit: int = 100):
+    def list_tasks(identity: Annotated[OperatorIdentity, Depends(reader)], limit: int = 100):
         if not 1 <= limit <= 1000:
             raise HTTPException(status_code=422, detail="limit must be between 1 and 1000")
         with store.connect() as db:
-            rows = db.execute("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+            if identity.bootstrap:
+                rows = db.execute("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?",
+                                  (limit,)).fetchall()
+            else:
+                rows = db.execute("""SELECT * FROM tasks WHERE org_id=?
+                    ORDER BY created_at DESC LIMIT ?""", (identity.org_id, limit)).fetchall()
         return [dict(row.row._mapping) for row in rows]
 
     @app.get("/planes")
@@ -250,8 +339,8 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                 "memory": "ready", "compute": "ready", "router": config.router.provider}
 
     @app.get("/api/v1/tasks/{task_id}/audit")
-    def task_audit(task_id: str, _operator: Annotated[None, Depends(operator)]):
-        task_row(task_id)
+    def task_audit(task_id: str, identity: Annotated[OperatorIdentity, Depends(reader)]):
+        task_row(task_id, identity)
         with store.connect() as db:
             decisions = db.execute("SELECT * FROM governance_decisions WHERE task_id=? ORDER BY created_at",
                                    (task_id,)).fetchall()
@@ -268,10 +357,10 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
 
     @app.put("/api/v1/tasks/{task_id}/budgets/{period}")
     def set_budget(task_id: str, period: str, body: BudgetCreate,
-                   _operator: Annotated[None, Depends(operator)]):
+                   identity: Annotated[OperatorIdentity, Depends(tenant_operator)]):
         if period not in {"daily", "weekly", "monthly"}:
             raise HTTPException(status_code=422, detail="invalid budget period")
-        if task_row(task_id)["is_terminal"]:
+        if task_row(task_id, identity)["is_terminal"]:
             raise HTTPException(status_code=409, detail="task is terminal")
         try:
             cents = usd_to_cents(body.amount_usd)
@@ -290,8 +379,8 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         return {"task_id": task_id, "period": period, "amount_usd": str(body.amount_usd)}
 
     @app.get("/api/v1/tasks/{task_id}/budgets")
-    def list_budgets(task_id: str, _operator: Annotated[None, Depends(operator)]):
-        task_row(task_id)
+    def list_budgets(task_id: str, identity: Annotated[OperatorIdentity, Depends(reader)]):
+        task_row(task_id, identity)
         with store.connect() as db:
             budgets = db.execute("SELECT period,amount_cents,approved_by,created_at FROM quota_budgets WHERE task_id=?",
                                  (task_id,)).fetchall()
@@ -322,24 +411,27 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                 "entries": len(rows), "head_hash": previous}
 
     @app.post("/api/v1/tasks/{task_id}/steps", status_code=201)
-    def add_step(task_id: str, body: StepCreate, _operator: Annotated[None, Depends(operator)]):
-        task_row(task_id)
+    def add_step(task_id: str, body: StepCreate,
+                 identity: Annotated[OperatorIdentity, Depends(tenant_operator)]):
+        task_row(task_id, identity)
         try:
             return {"step_id": tasks.add_step(task_id, body.instruction)}
         except LeaseError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get("/api/v1/steps/{step_id}")
-    def get_step(step_id: str, _operator: Annotated[None, Depends(operator)]):
+    def get_step(step_id: str, identity: Annotated[OperatorIdentity, Depends(reader)]):
         with store.connect() as db:
             row = db.execute("SELECT * FROM task_steps WHERE step_id=?", (step_id,)).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="step not found")
+        task_row(row["task_id"], identity)
         return dict(row.row._mapping)
 
     @app.post("/api/v1/tasks/{task_id}/worker-sessions", status_code=201)
-    def issue_session(task_id: str, body: SessionCreate, _operator: Annotated[None, Depends(operator)]):
-        if task_row(task_id)["is_terminal"]:
+    def issue_session(task_id: str, body: SessionCreate,
+                      identity: Annotated[OperatorIdentity, Depends(tenant_operator)]):
+        if task_row(task_id, identity)["is_terminal"]:
             raise HTTPException(status_code=409, detail="task is terminal")
         return {"token": auth.issue_worker(task_id, body.worker_id, body.ttl_seconds)}
 
@@ -358,7 +450,13 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/v1/steps/{step_id}/complete")
-    def complete_step(step_id: str, body: StepComplete, _operator: Annotated[None, Depends(operator)]):
+    def complete_step(step_id: str, body: StepComplete,
+                      identity: Annotated[OperatorIdentity, Depends(tenant_operator)]):
+        with store.connect() as db:
+            step = db.execute("SELECT task_id FROM task_steps WHERE step_id=?", (step_id,)).fetchone()
+        if step is None:
+            raise HTTPException(status_code=404, detail="step not found")
+        task_row(step["task_id"], identity)
         try:
             lease = Lease(**body.lease)
             if lease.step_id != step_id:
@@ -374,7 +472,7 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
             raise HTTPException(status_code=403, detail="wrong task scope")
         row = task_row(task_id)
         return {"task_id": task_id, "title": row["title"], "privacy_class": row["privacy_class"],
-                "memory": memory.recall(row["memory_scope"])}
+                "memory": memory.recall(row["memory_scope"], org_id=row["org_id"])}
 
     @app.post("/api/v1/tasks/{task_id}/memory/capture", status_code=201)
     def capture(task_id: str, body: ClaimCreate, identity: Annotated[WorkerIdentity, Depends(worker)]):
@@ -385,7 +483,7 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
             claim_id = memory.capture(row["memory_scope"], body.claim_text, identity.worker_id,
                 confidence=body.confidence, confidence_label=body.confidence_label,
                 valid_from=body.valid_from, valid_until=body.valid_until,
-                tags=body.tags, sources=body.sources)
+                tags=body.tags, sources=body.sources, org_id=row["org_id"])
         except (ValueError, KeyError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"claim_id": claim_id}
@@ -397,7 +495,9 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
             raise HTTPException(status_code=403, detail="wrong task scope")
         if body.profile not in {"full", "worker_brief"}:
             raise HTTPException(status_code=422, detail="unknown recall profile")
-        items = memory.recall_records(body.scope, active_only=True, max_items=body.max_items)
+        row = task_row(task_id)
+        items = memory.recall_records(body.scope, active_only=True,
+                                      max_items=body.max_items, org_id=row["org_id"])
         if body.profile == "worker_brief":
             items = [{"text": item["text"], "scope": item["scope"],
                       "trusted": item["trusted"]} for item in items]

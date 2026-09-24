@@ -34,7 +34,7 @@ connectd db upgrade
 connectd serve
 ```
 
-Set `daemon.signing_key_path` to the key path. The API binds to loopback by default. Visit `http://127.0.0.1:8790/control` and enter the operator token for the current tab. Operators can create tasks, inspect audit timelines, and promote candidate memories there. The API also supports direct clients with `Authorization: Bearer <token>`.
+Set `daemon.signing_key_path` to the key path. The API binds to loopback by default. Visit `http://127.0.0.1:8790/control` and enter the bootstrap operator token for the current tab. The organization setup panel creates an organization and issues one-time local user tokens with `admin`, `operator`, or `viewer` roles. Organization admins can issue and revoke users in their own organization. Organization members see only their tasks and audit timelines; workers read memory from their task's organization. Global tool and compute administration remains bootstrap-only while organization registry ownership is configured. The API also supports direct clients with `Authorization: Bearer <token>`.
 
 Register a healthy compute node before dispatching a step. A `secret_sensitive` task uses only an air-gapped local node by default. Local inference endpoint hostnames must appear in `model_api.allowed_local_hosts` (loopback and the bundled `model-engine` name by default). Direct worker inference is limited to a matching registered free local node. Paid and remote nodes use the authenticated model proxy, which shares the task spend ledger with tool calls. Remote node records need an HTTPS endpoint, model ID, allowed privacy classes, and per-node mTLS CA/client certificate/key paths. Explicitly allowlist any remote node permitted to receive secret-sensitive requests.
 

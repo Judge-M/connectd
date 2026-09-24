@@ -97,6 +97,10 @@ class Store:
 
     def initialize(self) -> None:
         metadata.create_all(self.engine)
+        with self.connect() as db:
+            db.execute("""INSERT INTO organizations(org_id,name,created_at)
+                VALUES ('default','Default','1970-01-01T00:00:00+00:00')
+                ON CONFLICT (org_id) DO NOTHING""")
 
     def dispose(self) -> None:
         self.engine.dispose()

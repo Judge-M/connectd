@@ -37,7 +37,8 @@ class MemoryLedger:
     def capture(self, scope: str, claim_text: str, origin: str, *,
                 confidence: float | None = None, confidence_label: str | None = None,
                 valid_from: str | None = None, valid_until: str | None = None,
-                tags: list[str] | None = None, sources: list[dict] | None = None) -> str:
+                tags: list[str] | None = None, sources: list[dict] | None = None,
+                org_id: str = "default") -> str:
         if confidence is not None and not 0 <= confidence <= 1:
             raise ValueError("confidence must be in [0,1]")
         if confidence_label is not None and confidence_label not in {"low", "medium", "high", "verified"}:
@@ -45,10 +46,10 @@ class MemoryLedger:
         claim_id = str(uuid.uuid4())
         now = utcnow().isoformat()
         with self.store.connect() as db:
-            db.execute("""INSERT INTO memory_claims(claim_id,scope,claim_text,status,is_trusted,origin,
+            db.execute("""INSERT INTO memory_claims(claim_id,org_id,scope,claim_text,status,is_trusted,origin,
                 created_at,confidence,confidence_label,valid_from,valid_until,tags_json)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (claim_id, scope, claim_text, "pending", False, origin, now,
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (claim_id, org_id, scope, claim_text, "pending", False, origin, now,
                  confidence, confidence_label, valid_from, valid_until, json.dumps(tags or [])))
             for source in sources or []:
                 db.execute("""INSERT INTO claim_provenance(provenance_id,claim_id,source_uri,
@@ -75,12 +76,12 @@ class MemoryLedger:
 
     def recall_records(self, scope: str, *, include_pending: bool = False,
                        trusted_only: bool = True, active_only: bool = False,
-                       max_items: int = 8) -> list[dict]:
+                       max_items: int = 8, org_id: str = "default") -> list[dict]:
         if not 1 <= max_items <= 100:
             raise ValueError("max_items must be in [1,100]")
         with self.store.connect() as db:
-            rows = db.execute("""SELECT * FROM memory_claims WHERE scope IN (?,?,?)
-                ORDER BY created_at,claim_id""", (scope, "global", "global:")).fetchall()
+            rows = db.execute("""SELECT * FROM memory_claims WHERE org_id=? AND scope IN (?,?,?)
+                ORDER BY created_at,claim_id""", (org_id, scope, "global", "global:")).fetchall()
             result = []
             for row in rows:
                 claim = dict(row.row._mapping)
@@ -122,5 +123,6 @@ class MemoryLedger:
                     break
         return result
 
-    def recall(self, scope: str) -> list[str]:
-        return [item["text"] for item in self.recall_records(scope, active_only=True)]
+    def recall(self, scope: str, org_id: str = "default") -> list[str]:
+        return [item["text"] for item in self.recall_records(
+            scope, active_only=True, org_id=org_id)]

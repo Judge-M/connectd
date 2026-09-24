@@ -5,6 +5,7 @@ import hmac
 import secrets
 from dataclasses import dataclass
 from datetime import timedelta
+from uuid import uuid4
 
 from connectd.governance import utcnow
 from connectd.store import Store
@@ -12,6 +13,14 @@ from connectd.store import Store
 
 class AuthenticationError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class OperatorIdentity:
+    user_id: str
+    org_id: str | None
+    role: str
+    bootstrap: bool = False
 
 
 @dataclass(frozen=True)
@@ -27,10 +36,38 @@ class AuthService:
         self.store = store
         self._operator_token_hash = hashlib.sha256(operator_token.encode()).digest()
 
-    def require_operator(self, token: str) -> None:
+    def require_operator(self, token: str, minimum_role: str = "operator") -> OperatorIdentity:
+        ranks = {"viewer": 0, "operator": 1, "admin": 2}
+        if minimum_role not in ranks:
+            raise ValueError("unknown minimum role")
         actual = hashlib.sha256(token.encode()).digest()
-        if not hmac.compare_digest(actual, self._operator_token_hash):
+        if hmac.compare_digest(actual, self._operator_token_hash):
+            return OperatorIdentity("bootstrap", None, "admin", True)
+        token_hash = actual.hex()
+        with self.store.connect() as db:
+            row = db.execute("""SELECT user_id,org_id,role,active FROM operator_users
+                WHERE token_hash=?""", (token_hash,)).fetchone()
+        if row is None or not row["active"] or ranks.get(row["role"], -1) < ranks[minimum_role]:
             raise AuthenticationError("operator authentication failed")
+        return OperatorIdentity(row["user_id"], row["org_id"], row["role"])
+
+    def issue_operator(self, org_id: str, display_name: str, role: str) -> tuple[str, str]:
+        if role not in {"admin", "operator", "viewer"}:
+            raise ValueError("invalid operator role")
+        token = "op_" + secrets.token_urlsafe(32)
+        user_id = str(uuid4())
+        with self.store.connect() as db:
+            db.execute("""INSERT INTO operator_users(user_id,org_id,display_name,role,
+                token_hash,created_at) VALUES (?,?,?,?,?,?)""",
+                (user_id, org_id, display_name, role,
+                 hashlib.sha256(token.encode()).hexdigest(), utcnow().isoformat()))
+        return user_id, token
+
+    def revoke_operator(self, org_id: str, user_id: str) -> bool:
+        with self.store.connect() as db:
+            changed = db.execute("""UPDATE operator_users SET active=FALSE
+                WHERE org_id=? AND user_id=? AND active=TRUE""", (org_id, user_id))
+        return changed.rowcount == 1
 
     def issue_worker(self, task_id: str, worker_id: str, ttl_seconds: int = 3600) -> str:
         if not 1 <= ttl_seconds <= 86400:

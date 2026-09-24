@@ -22,6 +22,8 @@ Every paid model node declares registry pricing, a per-request USD cap, a total 
 
 The default worker loop is native Python using `httpx`, `pydantic`, and OpenAI `/v1/chat/completions` tool calls. It has a bounded turn count, receives only promoted context, and returns a compact task report. `smolagents` is an optional adapter, not a mandatory dependency.
 
+Organization-scoped local users are bootstrapped by the existing operator token. The `admin`, `operator`, and `viewer` roles control user management, task writes, and task reads; operator tokens are stored only as SHA-256 hashes and can be revoked. Tasks and memory claims carry an organization key so context and task timelines remain tenant-scoped. The bootstrap token can inspect and administer the installation.
+
 ## 3. Execution profiles and network boundaries
 
 | Profile | Runtime | Tier 2 grant path | Docker network |

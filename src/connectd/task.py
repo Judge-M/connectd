@@ -30,13 +30,14 @@ class TaskManager:
 
     def create_task(self, title: str, privacy: PrivacyClass, memory_scope: str,
                     execution_profile: str = "balanced", goal: str = "", priority: str = "normal",
-                    created_by: str = "operator", metadata_json: str = "{}") -> str:
+                    created_by: str = "operator", metadata_json: str = "{}",
+                    org_id: str = "default") -> str:
         task_id = str(uuid.uuid4())
         now = utcnow().isoformat()
         with self.store.connect() as db:
-            db.execute("""INSERT INTO tasks(task_id,title,goal,priority,created_by,metadata_json,
+            db.execute("""INSERT INTO tasks(task_id,org_id,title,goal,priority,created_by,metadata_json,
                 privacy_class,memory_scope,execution_profile,created_at,updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (task_id, title, goal, priority, created_by,
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", (task_id, org_id, title, goal, priority, created_by,
                 metadata_json, privacy.value, memory_scope, execution_profile, now, now))
         return task_id
 
