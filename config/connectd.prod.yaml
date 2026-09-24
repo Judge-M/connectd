@@ -24,6 +24,8 @@ task_defaults:
   default_privacy_class: "repo_sensitive"
 spend:
   reset_timezone: "UTC"
+compute:
+  health_interval_seconds: 30
 default_execution_profile: "prod_secure"
 secret_sensitive_allowed_node_ids: []
 execution_profiles:

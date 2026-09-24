@@ -145,6 +145,7 @@ class NodeCreate(BaseModel):
     pricing: dict | None = None
     tokenizer: dict | None = None
     preflight_url: str | None = None
+    health_url: str | None = None
 
 
 class RouteRequest(BaseModel):
@@ -442,8 +443,8 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                     parsed.hostname not in config.model_api.allowed_local_hosts):
                 raise HTTPException(status_code=422, detail="local node endpoint host is not allowed")
         if body.privacy_tier != "local_only":
-            if not body.endpoint_url or not body.model_id or not body.allowed_privacy_classes:
-                raise HTTPException(status_code=422, detail="remote node needs endpoint, model, and privacy classes")
+            if not body.endpoint_url or not body.model_id or not body.allowed_privacy_classes or not body.health_url:
+                raise HTTPException(status_code=422, detail="remote node needs endpoint, model, privacy classes, and health URL")
             if not body.endpoint_url.startswith("https://") or not all((body.ca_cert_path,
                     body.client_cert_path, body.client_key_path)):
                 raise HTTPException(status_code=422, detail="remote node requires HTTPS and mTLS paths")
@@ -457,20 +458,25 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                 validate_tokenizer(body.tokenizer)
             except TokenizerError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
-        if body.preflight_url:
-            if not body.endpoint_url or body.billing_mode != "paid":
-                raise HTTPException(status_code=422, detail="preflight is only for paid inference endpoints")
+        for checked_url, purpose in ((body.preflight_url, "preflight"), (body.health_url, "health")):
+            if not checked_url:
+                continue
+            if not body.endpoint_url:
+                raise HTTPException(status_code=422, detail=f"{purpose} needs an inference endpoint")
             endpoint = urlsplit(body.endpoint_url)
-            preflight = urlsplit(body.preflight_url)
+            checked = urlsplit(checked_url)
             try:
-                same_origin = ((preflight.scheme, preflight.hostname, preflight.port) ==
+                same_origin = ((checked.scheme, checked.hostname, checked.port) ==
                                (endpoint.scheme, endpoint.hostname, endpoint.port))
             except ValueError:
                 same_origin = False
-            if (not same_origin or not preflight.path or preflight.query or preflight.fragment or
-                    preflight.username or preflight.password):
+            if (not same_origin or not checked.path or checked.query or checked.fragment or
+                    checked.username or checked.password):
                 raise HTTPException(status_code=422,
-                    detail="preflight URL must share the inference endpoint origin")
+                    detail=f"{purpose} URL must share the inference endpoint origin")
+        if body.preflight_url:
+            if not body.endpoint_url or body.billing_mode != "paid":
+                raise HTTPException(status_code=422, detail="preflight is only for paid inference endpoints")
         if body.pricing:
             try:
                 from connectd.spend import model_quote
@@ -482,15 +488,17 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         with store.connect() as db:
             db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,airgapped,billing_mode,
                 endpoint_url,model_id,max_context,allowed_privacy_json,ca_cert_path,client_cert_path,client_key_path,
-                pricing_model,tokenizer_json,preflight_url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (body.node_id, body.provider_type, body.privacy_tier, True, body.airgapped, body.billing_mode,
+                pricing_model,tokenizer_json,preflight_url,health_url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (body.node_id, body.provider_type, body.privacy_tier,
+                 body.privacy_tier == "local_only" and not body.health_url,
+                 body.airgapped, body.billing_mode,
                  body.endpoint_url, body.model_id, body.max_context,
                  json.dumps(sorted(item.value for item in body.allowed_privacy_classes))
                  if body.allowed_privacy_classes else None,
                  body.ca_cert_path, body.client_cert_path, body.client_key_path,
                  json.dumps(body.pricing, sort_keys=True) if body.pricing else None,
                  json.dumps(body.tokenizer, sort_keys=True) if body.tokenizer else None,
-                 body.preflight_url))
+                 body.preflight_url, body.health_url))
         return {"node_id": body.node_id}
 
     @app.get("/api/v1/compute/nodes/{node_id}")
@@ -500,6 +508,20 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         if row is None:
             raise HTTPException(status_code=404, detail="node not found")
         return dict(row.row._mapping)
+
+    @app.get("/api/v1/compute/nodes")
+    def list_nodes(_operator: Annotated[None, Depends(operator)]):
+        with store.connect() as db:
+            rows = db.execute("""SELECT node_id,provider_type,privacy_tier,healthy,
+                model_id,last_health_at,capacity_json FROM compute_nodes ORDER BY node_id""").fetchall()
+        return [dict(row.row._mapping) for row in rows]
+
+    @app.post("/api/v1/compute/nodes/{node_id}/probe")
+    def probe_node(node_id: str, _operator: Annotated[None, Depends(operator)]):
+        from connectd.node_monitor import NodeMonitor
+        if not NodeMonitor(store).probe(node_id):
+            raise HTTPException(status_code=503, detail="node failed authenticated health or capacity check")
+        return {"node_id": node_id, "healthy": True}
 
     @app.post("/api/v1/tools", status_code=201)
     def register_tool(body: ToolCreate, _operator: Annotated[None, Depends(operator)]):

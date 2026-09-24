@@ -128,7 +128,18 @@ def main(argv: list[str] | None = None) -> None:
 
     store = Store(config.daemon.database_url)
     app = create_app(config, store, load_signing_key(config.daemon.signing_key_path), token)
-    uvicorn.run(app, host=config.daemon.host, port=config.daemon.port)
+    from threading import Event, Thread
+    from connectd.node_monitor import NodeMonitor
+
+    stopped = Event()
+    monitor = Thread(target=NodeMonitor(store).run_until,
+                     args=(stopped, config.compute.health_interval_seconds), daemon=True)
+    monitor.start()
+    try:
+        uvicorn.run(app, host=config.daemon.host, port=config.daemon.port)
+    finally:
+        stopped.set()
+        monitor.join(timeout=5)
 
 
 if __name__ == "__main__":

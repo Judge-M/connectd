@@ -91,6 +91,12 @@ class SpendSettings(BaseModel):
         return self
 
 
+class ComputeSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    health_interval_seconds: int = Field(default=30, ge=1, le=3600)
+
+
 class ExecutionProfile(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -118,6 +124,7 @@ class ConnectdConfig(BaseModel):
     model_api: ModelAPISettings = Field(default_factory=ModelAPISettings)
     task_defaults: TaskDefaults = Field(default_factory=TaskDefaults)
     spend: SpendSettings = Field(default_factory=SpendSettings)
+    compute: ComputeSettings = Field(default_factory=ComputeSettings)
     default_execution_profile: str = "balanced"
     execution_profiles: dict[str, ExecutionProfile] = Field(default_factory=default_profiles)
     # Secret-sensitive tasks use only air-gapped local nodes by default.
