@@ -59,6 +59,15 @@ class CoreTests(unittest.TestCase):
             ConnectdConfig(default_execution_profile="missing")
         loaded = load_config(Path(__file__).parents[1] / "config" / "connectd.yaml")
         self.assertEqual(loaded.profile("prod_secure").worker_runtime.value, "docker")
+        profiles = config.execution_profiles.copy()
+        profiles["prod_secure"] = profiles["prod_secure"].model_copy(
+            update={"worker_runtime": "subprocess"})
+        with self.assertRaisesRegex(ValueError, "prod_secure requires"):
+            ConnectdConfig(execution_profiles=profiles)
+        profiles["prod_secure"] = config.profile("prod_secure").model_copy(
+            update={"grant_mode": "auto_grant"})
+        with self.assertRaisesRegex(ValueError, "prod_secure requires"):
+            ConnectdConfig(execution_profiles=profiles)
 
     def test_signed_grant_is_single_use_and_argument_bound(self):
         governance = Governance(self.store, Ed25519PrivateKey.generate(), ConnectdConfig().profile("prod_secure"))

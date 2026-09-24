@@ -161,6 +161,10 @@ class ConnectdConfig(BaseModel):
         if (self.default_execution_profile == "prod_secure" and
                 not self.worker_model.uses_proxy):
             raise ValueError("prod_secure requires the authenticated model proxy")
+        secure = self.execution_profiles.get("prod_secure")
+        if secure is not None and (secure.grant_mode != GrantMode.STRICT_ED25519 or
+                                   secure.worker_runtime == WorkerRuntime.SUBPROCESS):
+            raise ValueError("prod_secure requires strict Ed25519 grants and a containerized worker")
         manager_ids = [manager.manager_id for manager in self.compute.node_managers]
         if len(manager_ids) != len(set(manager_ids)):
             raise ValueError("node manager IDs must be unique")
