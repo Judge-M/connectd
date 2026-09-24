@@ -56,6 +56,8 @@ docker compose -f compose.prod-secure.yaml up --build -d
 
 The host-side `connectd worker run-step` command needs access to the Docker engine; the gateway container does not mount its socket. `prod_secure` fails closed if its container runtime or internal network is missing. The routing target of under 100 ms for local Laya is a measurement goal, not a guaranteed latency on every host.
 
+Selecting the `gvisor` worker runtime requires Docker to report an installed `runsc` runtime; otherwise dispatch stops before launching a worker. gVisor is a sandboxed container runtime. Firecracker microVM execution requires a separate Linux/KVM launcher and is tracked independently from this container boundary.
+
 ## Legacy import
 
 `connectd db migrate-legacy` needs all four source paths plus explicit choices for tasks without privacy metadata and retention of audit payloads. Source databases are opened read-only. The importer verifies ToolConnect hash links and records the original `prev_hash` and `record_hash`. Hash-only retention keeps those fields while omitting raw audit bodies from the unified database; full retention allows read-time payload hash verification. The source files remain available as the original evidence.

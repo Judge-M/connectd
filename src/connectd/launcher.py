@@ -73,6 +73,17 @@ class WorkerLauncher:
         except (ValueError, KeyError, TypeError) as exc:
             raise SecurityBoundaryViolation("prod_secure requires a Docker internal network") from exc
 
+    @staticmethod
+    def _assert_gvisor_runtime() -> None:
+        result = subprocess.run(["docker", "info", "--format", "{{json .Runtimes}}"],
+                                capture_output=True, text=True, check=False)
+        try:
+            runtimes = json.loads(result.stdout)
+            if result.returncode != 0 or not isinstance(runtimes, dict) or "runsc" not in runtimes:
+                raise ValueError("runsc is missing")
+        except (ValueError, TypeError) as exc:
+            raise SecurityBoundaryViolation("gVisor runsc Docker runtime is unavailable") from exc
+
     def run(self, payload: WorkerInput, worktree: Path, profile: ExecutionProfile,
             effect_tier: int, timeout_seconds: int = 300) -> WorkerReport:
         if not worktree.is_dir():
@@ -93,6 +104,8 @@ class WorkerLauncher:
                 raise SecurityBoundaryViolation(f"{binary} runtime is unavailable")
             if secure:
                 self._assert_internal_network(binary, network)
+            if runtime == WorkerRuntime.GVISOR:
+                self._assert_gvisor_runtime()
             payload = payload.model_copy(update={
                 "model_base_url": self._container_url(payload.model_base_url, secure, "model-api"),
                 "control_plane_url": self._container_url(payload.control_plane_url, secure, "connectd-gateway"),

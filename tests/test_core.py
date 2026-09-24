@@ -297,6 +297,18 @@ class CoreTests(unittest.TestCase):
         with self.assertRaises(SecurityBoundaryViolation):
             WorkerLauncher._container_url("http://example.com", True, "model-api")
 
+    def test_gvisor_requires_installed_runsc_runtime(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        with patch("connectd.launcher.subprocess.run", return_value=SimpleNamespace(
+                returncode=0, stdout='{"runc":{}}')):
+            with self.assertRaises(SecurityBoundaryViolation):
+                WorkerLauncher._assert_gvisor_runtime()
+        with patch("connectd.launcher.subprocess.run", return_value=SimpleNamespace(
+                returncode=0, stdout='{"runsc":{},"runc":{}}')):
+            WorkerLauncher._assert_gvisor_runtime()
+
     def test_workbench_stays_inside_worktree_and_honors_authority(self):
         root = Path(__file__).parents[1] / "work" / ("workspace-" + uuid.uuid4().hex)
         root.mkdir()
