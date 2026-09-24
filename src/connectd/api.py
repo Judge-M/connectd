@@ -43,6 +43,10 @@ class OperatorCreate(BaseModel):
     role: Literal["admin", "operator", "viewer"]
 
 
+class OrganizationSettingsUpdate(BaseModel):
+    allow_unquoted_runpod: bool
+
+
 class TaskCreate(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     privacy_class: PrivacyClass
@@ -254,6 +258,28 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         with store.connect() as db:
             rows = db.execute("SELECT * FROM organizations ORDER BY created_at").fetchall()
         return [dict(row.row._mapping) for row in rows]
+
+    @app.get("/api/v1/orgs/{org_id}/settings")
+    def get_organization_settings(org_id: str,
+                                  identity: Annotated[OperatorIdentity, Depends(admin)]):
+        require_org(identity, org_id)
+        with store.connect() as db:
+            row = db.execute("""SELECT org_id,allow_unquoted_runpod FROM organizations
+                WHERE org_id=?""", (org_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="organization not found")
+        return {"org_id": org_id, "allow_unquoted_runpod": bool(row["allow_unquoted_runpod"])}
+
+    @app.put("/api/v1/orgs/{org_id}/settings")
+    def update_organization_settings(org_id: str, body: OrganizationSettingsUpdate,
+                                     identity: Annotated[OperatorIdentity, Depends(admin)]):
+        require_org(identity, org_id)
+        with store.connect() as db:
+            updated = db.execute("""UPDATE organizations SET allow_unquoted_runpod=?
+                WHERE org_id=?""", (body.allow_unquoted_runpod, org_id))
+        if updated.rowcount != 1:
+            raise HTTPException(status_code=404, detail="organization not found")
+        return {"org_id": org_id, "allow_unquoted_runpod": body.allow_unquoted_runpod}
 
     @app.post("/api/v1/orgs/{org_id}/users", status_code=201)
     def create_operator(org_id: str, body: OperatorCreate,

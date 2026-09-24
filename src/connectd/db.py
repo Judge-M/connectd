@@ -10,6 +10,7 @@ organizations = Table("organizations", metadata,
     Column("org_id", String, primary_key=True),
     Column("name", String, nullable=False),
     Column("created_at", String, nullable=False),
+    Column("allow_unquoted_runpod", Boolean, nullable=False, server_default="0"),
 )
 operator_users = Table("operator_users", metadata,
     Column("user_id", String, primary_key=True),
