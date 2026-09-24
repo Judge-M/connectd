@@ -789,7 +789,9 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
             raise HTTPException(status_code=403, detail="wrong task scope")
         row = task_row(task_id)
         try:
-            node_id = place(store, PrivacyClass(row["privacy_class"]), config.secret_sensitive_allowed_node_ids)
+            node_id = place(store, PrivacyClass(row["privacy_class"]),
+                            config.secret_sensitive_allowed_node_ids,
+                            max_health_age_seconds=config.compute.health_interval_seconds * 3)
         except PlacementDenied as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         with store.connect() as db:

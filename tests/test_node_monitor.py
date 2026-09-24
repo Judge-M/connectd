@@ -2,12 +2,15 @@
 
 import tempfile
 import unittest
+from datetime import timedelta
 from unittest.mock import patch
 from pathlib import Path
 
 import httpx
 
 from connectd.node_monitor import NodeMonitor
+from connectd.compute import PrivacyClass, PlacementDenied, place
+from connectd.governance import utcnow
 from connectd.config import ConnectdConfig, ComputeSettings, NodeManagerSettings
 from connectd.api import create_app
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -47,6 +50,27 @@ class NodeMonitorTests(unittest.TestCase):
             with store.connect() as db:
                 self.assertFalse(db.execute("SELECT healthy FROM compute_nodes").fetchone()[0])
             self.assertEqual(calls, ["http://127.0.0.1:8090/health"] * 2)
+            store.dispose()
+
+    def test_stale_monitored_node_is_not_placed(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            store = Store(Path(scratch) / "nodes.db")
+            store.initialize()
+            old = (utcnow() - timedelta(seconds=91)).isoformat()
+            with store.connect() as db:
+                db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,
+                    billing_mode,endpoint_url,model_id,health_url,last_health_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
+                    ("gpu-1", "remote-manager", "local_only", True, "free",
+                     "http://127.0.0.1:8090/v1", "chosen-model",
+                     "http://127.0.0.1:8090/health", old))
+            with self.assertRaises(PlacementDenied):
+                place(store, PrivacyClass.PUBLIC, max_health_age_seconds=90)
+            with store.connect() as db:
+                db.execute("UPDATE compute_nodes SET last_health_at=? WHERE node_id=?",
+                           (utcnow().isoformat(), "gpu-1"))
+            self.assertEqual(place(store, PrivacyClass.PUBLIC,
+                                   max_health_age_seconds=90), "gpu-1")
             store.dispose()
 
     def test_manager_only_admits_approved_registered_nodes(self):

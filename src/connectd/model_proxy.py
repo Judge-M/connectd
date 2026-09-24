@@ -43,7 +43,8 @@ def create_model_proxy(config: ConnectdConfig, store: Store, operator_token: str
         try:
             node_id = place(store, PrivacyClass(task["privacy_class"]),
                             config.secret_sensitive_allowed_node_ids,
-                            model_id=payload.get("model"))
+                            model_id=payload.get("model"),
+                            max_health_age_seconds=config.compute.health_interval_seconds * 3)
         except PlacementDenied as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         with store.connect() as db:
