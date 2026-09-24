@@ -503,6 +503,44 @@ class CoreTests(unittest.TestCase):
         self.assertEqual((record["amount_cents"], record["reserved_cents"],
                           record["status"], record["actual_units"]), (2, 20, "settled", 150))
 
+    def test_worker_turn_uses_paid_proxy_and_settles_quota(self):
+        import httpx
+        from fastapi.testclient import TestClient
+
+        with self.store.connect() as db:
+            db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,
+                airgapped,billing_mode,endpoint_url,model_id,pricing_model)
+                VALUES (?,?,?,?,?,?,?,?,?)""",
+                ("paid-loop", "vllm", "local_only", True, False, "paid",
+                 "http://model-engine:8090", "capable-model", json.dumps({
+                     "input_rate_per_1k_tokens": "0.10",
+                     "output_rate_per_1k_tokens": "0.20",
+                     "max_total_tokens": 1000, "max_cost_per_request": "0.20"})))
+            db.execute("""INSERT INTO quota_budgets(budget_id,task_id,period,amount_cents,
+                approved_by,created_at) VALUES (?,?,?,?,?,?)""",
+                (str(uuid.uuid4()), "task-1", "daily", 100, "operator", utcnow().isoformat()))
+
+        def respond(request):
+            self.assertEqual(json.loads(request.content)["max_tokens"], 1000)
+            self.assertNotIn("authorization", request.headers)
+            return httpx.Response(200, json={"choices": [{"message": {"content": "Done"}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 50}})
+
+        proxy = create_model_proxy(ConnectdConfig(), self.store, "o" * 40,
+            client_factory=lambda _tls: httpx.Client(transport=httpx.MockTransport(respond)))
+        proxy_client = TestClient(proxy, base_url="http://proxy")
+        worker_token = AuthService(self.store, "o" * 40).issue_worker("task-1", "worker-1")
+        worker = DirectWorker("http://proxy", "capable-model", lambda *_: {}, proxy_client,
+                              model_auth_token=worker_token, max_output_tokens=1000)
+        ticket = Ticket(id=uuid.uuid4(), conversation_id=uuid.uuid4(), objective="Summarize",
+                        deliverable="Summary", authority={})
+        report = worker.run(ticket, uuid.uuid4(), {"type": "function", "function": {
+            "name": "workbench", "description": "Local work", "parameters": {"type": "object"}}})
+        self.assertEqual(report.summary, "Done")
+        with self.store.connect() as db:
+            row = db.execute("SELECT amount_cents,status FROM quota_records").fetchone()
+        self.assertEqual((row["amount_cents"], row["status"]), (2, "settled"))
+
     def test_legacy_aliases_require_task_and_default_private(self):
         from fastapi.testclient import TestClient
 
