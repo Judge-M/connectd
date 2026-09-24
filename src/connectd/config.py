@@ -3,6 +3,8 @@
 from enum import Enum
 import os
 from pathlib import Path
+from typing import Literal
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -125,6 +127,51 @@ class ProvisioningSettings(BaseModel):
     runpod_secret_file: Path | None = None
 
 
+class LibrarianSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["fail_closed", "http_json"] = "fail_closed"
+    endpoint_url: str | None = None
+    token_env: str | None = None
+    allow_private_http: bool = False
+    allow_remote_https: bool = False
+    local_hostnames: frozenset[str] = Field(default_factory=lambda: frozenset({
+        "localhost", "127.0.0.1", "::1", "connectd-router", "model-api"}))
+    allowed_privacy_classes: frozenset[str] = Field(default_factory=lambda: frozenset({"public"}))
+    confidence_threshold: float = Field(default=0.90, ge=0, le=1)
+    timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+    poll_interval_seconds: int = Field(default=5, ge=1, le=3600)
+
+    @model_validator(mode="after")
+    def validate_evaluator(self):
+        known = {"public", "low_sensitive", "repo_sensitive", "secret_sensitive"}
+        if not self.allowed_privacy_classes <= known:
+            raise ValueError("invalid librarian privacy class")
+        if self.type == "http_json":
+            parsed = urlsplit(self.endpoint_url or "")
+            if (parsed.scheme not in {"http", "https"} or not parsed.hostname or
+                    parsed.username or parsed.password or parsed.query or parsed.fragment):
+                raise ValueError("librarian requires a plain HTTP(S) endpoint")
+            if parsed.scheme == "http":
+                if parsed.hostname not in self.local_hostnames:
+                    raise ValueError("remote librarian endpoints require HTTPS")
+                if (parsed.hostname not in {"127.0.0.1", "localhost", "::1"} and
+                        not self.allow_private_http):
+                    raise ValueError("internal container HTTP requires explicit opt-in")
+        elif self.endpoint_url is not None:
+            raise ValueError("fail-closed librarian must not have an endpoint")
+        return self
+
+    def remote_endpoint(self) -> bool:
+        return (self.type == "http_json" and
+                urlsplit(self.endpoint_url or "").hostname not in self.local_hostnames)
+
+
+class MemorySettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    evaluator: LibrarianSettings = Field(default_factory=LibrarianSettings)
+
+
 class ExecutionProfile(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -154,6 +201,7 @@ class ConnectdConfig(BaseModel):
     spend: SpendSettings = Field(default_factory=SpendSettings)
     compute: ComputeSettings = Field(default_factory=ComputeSettings)
     provisioning: ProvisioningSettings = Field(default_factory=ProvisioningSettings)
+    memory: MemorySettings = Field(default_factory=MemorySettings)
     default_execution_profile: str = "balanced"
     execution_profiles: dict[str, ExecutionProfile] = Field(default_factory=default_profiles)
     # Secret-sensitive tasks use only air-gapped local nodes by default.

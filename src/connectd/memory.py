@@ -51,7 +51,8 @@ class MemoryLedger:
                 valid_from: str | None = None, valid_until: str | None = None,
                 tags: list[str] | None = None, sources: list[dict] | None = None,
                 org_id: str = "default", task_id: str | None = None,
-                auto_promote: bool = False) -> str:
+                auto_promote: bool = False,
+                queue_for_librarian: bool = False) -> str:
         if confidence is not None and not 0 <= confidence <= 1:
             raise ValueError("confidence must be in [0,1]")
         if confidence_label is not None and confidence_label not in {"low", "medium", "high", "verified"}:
@@ -60,6 +61,8 @@ class MemoryLedger:
             raise ValueError("automatic promotion requires a task")
         if task_id is not None and scope != f"task:{task_id}":
             raise ValueError("task claim must use its task scope")
+        if queue_for_librarian and (task_id is None or not auto_promote):
+            raise ValueError("librarian queue requires trusted task memory")
         claim_id = str(uuid.uuid4())
         now = utcnow().isoformat()
         with self.store.connect() as db:
@@ -84,6 +87,26 @@ class MemoryLedger:
                     (str(uuid.uuid4()), claim_id, source["source_uri"], source["source_hash"], now,
                      source.get("source_id"), source.get("origin"), source.get("title"),
                      source.get("location"), source.get("mime_type")))
+            if queue_for_librarian:
+                candidate_id = str(uuid.uuid4())
+                db.execute("""INSERT INTO memory_claims(claim_id,org_id,scope,claim_text,
+                    status,is_trusted,origin,created_at,valid_from,valid_until,tags_json)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    (candidate_id, org_id, f"org:{org_id}", claim_text, "pending", False,
+                     f"librarian_candidate:{claim_id}", now, valid_from, valid_until,
+                     json.dumps(tags or [])))
+                for source in sources or []:
+                    db.execute("""INSERT INTO claim_provenance(provenance_id,claim_id,
+                        source_uri,source_hash,created_at,source_id,origin,title,location,
+                        mime_type) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                        (str(uuid.uuid4()), candidate_id, source["source_uri"],
+                         source["source_hash"], now, source.get("source_id"),
+                         source.get("origin"), source.get("title"),
+                         source.get("location"), source.get("mime_type")))
+                db.execute("""INSERT INTO memory_evaluation_jobs(job_id,source_claim_id,
+                    candidate_claim_id,org_id,status,created_at,updated_at)
+                    VALUES (?,?,?,?,'pending',?,?)""",
+                    (str(uuid.uuid4()), claim_id, candidate_id, org_id, now, now))
         return claim_id
 
     def promote(self, claim_id: str, human_operator_id: str,
@@ -202,5 +225,5 @@ class MemoryLedger:
 
     def recall(self, scope: str, org_id: str = "default",
                task_id: str | None = None) -> list[str]:
-        return [item["text"] for item in self.recall_records(
-            scope, active_only=True, org_id=org_id, task_id=task_id)]
+        return list(dict.fromkeys(item["text"] for item in self.recall_records(
+            scope, active_only=True, org_id=org_id, task_id=task_id)))

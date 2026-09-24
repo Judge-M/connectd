@@ -11,6 +11,7 @@ organizations = Table("organizations", metadata,
     Column("name", String, nullable=False),
     Column("created_at", String, nullable=False),
     Column("allow_unquoted_runpod", Boolean, nullable=False, server_default="0"),
+    Column("allow_remote_librarian", Boolean, nullable=False, server_default="0"),
     Column("memory_authority", String, nullable=False, server_default="hybrid"),
     CheckConstraint("memory_authority IN ('session_auto','hybrid','human_gated')"),
 )
@@ -195,6 +196,22 @@ memory_claims = Table("memory_claims", metadata,
 )
 Index("idx_memory_recall", memory_claims.c.scope, memory_claims.c.is_trusted)
 Index("idx_memory_task", memory_claims.c.org_id, memory_claims.c.task_id, memory_claims.c.status)
+memory_evaluation_jobs = Table("memory_evaluation_jobs", metadata,
+    Column("job_id", String, primary_key=True),
+    Column("source_claim_id", String, ForeignKey("memory_claims.claim_id"), nullable=False,
+           unique=True),
+    Column("candidate_claim_id", String, ForeignKey("memory_claims.claim_id"), nullable=False,
+           unique=True),
+    Column("org_id", String, ForeignKey("organizations.org_id"), nullable=False),
+    Column("status", String, nullable=False, server_default="pending"),
+    Column("created_at", String, nullable=False),
+    Column("updated_at", String, nullable=False),
+    Column("evaluator_score", Float),
+    Column("reason", Text),
+    CheckConstraint("status IN ('pending','evaluating','promoted','review_required')"),
+)
+Index("idx_memory_evaluation_queue", memory_evaluation_jobs.c.status,
+      memory_evaluation_jobs.c.created_at)
 claim_provenance = Table("claim_provenance", metadata,
     Column("provenance_id", String, primary_key=True),
     Column("claim_id", String, ForeignKey("memory_claims.claim_id", ondelete="CASCADE"), nullable=False),

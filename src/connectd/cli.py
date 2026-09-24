@@ -155,16 +155,21 @@ def main(argv: list[str] | None = None) -> None:
     app = create_app(config, store, load_signing_key(config.daemon.signing_key_path), token)
     from threading import Event, Thread
     from connectd.node_monitor import NodeMonitor
+    from connectd.memory_queue import MemoryEvaluationQueue
 
     stopped = Event()
     monitor = Thread(target=NodeMonitor(store, managers=config.compute.node_managers).run_until,
                      args=(stopped, config.compute.health_interval_seconds), daemon=True)
+    librarian = Thread(target=MemoryEvaluationQueue(store, config).run_until,
+                       args=(stopped,), daemon=True)
     monitor.start()
+    librarian.start()
     try:
         uvicorn.run(app, host=config.daemon.host, port=config.daemon.port)
     finally:
         stopped.set()
         monitor.join(timeout=5)
+        librarian.join(timeout=5)
 
 
 if __name__ == "__main__":

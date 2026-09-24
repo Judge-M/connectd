@@ -35,13 +35,16 @@ class MemoryMigrationTests(unittest.TestCase):
         store = Store(url)
         try:
             with store.connect() as db:
-                org = db.execute("SELECT memory_authority FROM organizations WHERE org_id=?",
+                org = db.execute("""SELECT memory_authority,allow_remote_librarian
+                    FROM organizations WHERE org_id=?""",
                                  ("migration-org",)).fetchone()
                 claim = db.execute("SELECT task_id,claim_text FROM memory_claims WHERE claim_id=?",
                                    ("migration-claim",)).fetchone()
                 db.execute("SELECT handler_id FROM tool_registry LIMIT 1").fetchone()
                 db.execute("SELECT admin_id FROM daemon_admins LIMIT 1").fetchone()
+                db.execute("SELECT job_id FROM memory_evaluation_jobs LIMIT 1").fetchone()
             self.assertEqual(org["memory_authority"], "hybrid")
+            self.assertFalse(org["allow_remote_librarian"])
             self.assertIsNone(claim["task_id"])
             self.assertEqual(claim["claim_text"], "Vetted")
             with self.assertRaises(IntegrityError):

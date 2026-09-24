@@ -30,6 +30,13 @@ compute:
   node_managers: []
 provisioning:
   runpod_secret_file: null  # Optional local env file containing RUNPOD_API_KEY.
+memory:
+  evaluator:
+    type: "fail_closed"  # Set http_json and endpoint_url to enable independent review.
+    endpoint_url: null
+    allow_remote_https: false  # Organization admin opt-in is also required.
+    allowed_privacy_classes: ["public"]
+    confidence_threshold: 0.90
 default_execution_profile: "balanced"
 secret_sensitive_allowed_node_ids: []
 execution_profiles:

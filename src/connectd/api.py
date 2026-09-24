@@ -52,6 +52,10 @@ class MemoryAuthorityUpdate(BaseModel):
     memory_authority: MemoryAuthority
 
 
+class RemoteLibrarianUpdate(BaseModel):
+    allow_remote_librarian: bool
+
+
 class ShareCreate(BaseModel):
     target_org_id: str = Field(min_length=1)
     resource_kind: Literal["tool", "node"]
@@ -303,12 +307,14 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                                   identity: Annotated[OperatorIdentity, Depends(admin)]):
         require_org(identity, org_id)
         with store.connect() as db:
-            row = db.execute("""SELECT org_id,allow_unquoted_runpod,memory_authority
+            row = db.execute("""SELECT org_id,allow_unquoted_runpod,memory_authority,
+                allow_remote_librarian
                 FROM organizations WHERE org_id=?""", (org_id,)).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="organization not found")
         return {"org_id": org_id, "allow_unquoted_runpod": bool(row["allow_unquoted_runpod"]),
-                "memory_authority": row["memory_authority"]}
+                "memory_authority": row["memory_authority"],
+                "allow_remote_librarian": bool(row["allow_remote_librarian"])}
 
     @app.put("/api/v1/orgs/{org_id}/settings")
     def update_organization_settings(org_id: str, body: OrganizationSettingsUpdate,
@@ -331,6 +337,18 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         if updated.rowcount != 1:
             raise HTTPException(status_code=404, detail="organization not found")
         return {"org_id": org_id, "memory_authority": body.memory_authority.value}
+
+    @app.put("/api/v1/orgs/{org_id}/remote-librarian")
+    def update_remote_librarian(org_id: str, body: RemoteLibrarianUpdate,
+                                identity: Annotated[OperatorIdentity, Depends(admin)]):
+        require_org_admin(identity, org_id)
+        with store.connect() as db:
+            updated = db.execute("""UPDATE organizations SET allow_remote_librarian=?
+                WHERE org_id=?""", (body.allow_remote_librarian, org_id))
+        if updated.rowcount != 1:
+            raise HTTPException(status_code=404, detail="organization not found")
+        return {"org_id": org_id,
+                "allow_remote_librarian": body.allow_remote_librarian}
 
     @app.post("/api/v1/orgs/{org_id}/provisioning/runpod/quote")
     def quote_runpod_pod(org_id: str, body: PodQuoteRequest,
@@ -646,7 +664,8 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                 confidence_label=body.confidence_label, valid_from=body.valid_from,
                 valid_until=body.valid_until, tags=body.tags, sources=body.sources,
                 org_id=row["org_id"], task_id=task_id,
-                auto_promote=authority != "human_gated")
+                auto_promote=authority != "human_gated",
+                queue_for_librarian=authority == "session_auto")
         except (ValueError, KeyError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"claim_id": claim_id, "scope": f"task:{task_id}",
@@ -665,8 +684,14 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                                       max_items=body.max_items, org_id=row["org_id"],
                                       task_id=task_id)
         if body.profile == "worker_brief":
-            items = [{"text": item["text"], "scope": item["scope"],
-                      "trusted": item["trusted"]} for item in items]
+            seen = set()
+            brief = []
+            for item in items:
+                if item["text"] not in seen:
+                    brief.append({"text": item["text"], "scope": item["scope"],
+                                  "trusted": item["trusted"]})
+                    seen.add(item["text"])
+            items = brief
         return {"query": body.query, "profile": body.profile, "items": items,
                 "warnings": [], "retrieval_mode": "ledger_scope"}
 
@@ -743,6 +768,15 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
             rows = db.execute("""SELECT * FROM memory_claims WHERE status='pending'
                 AND org_id=? ORDER BY created_at""",
                 (identity.org_id or "default",)).fetchall()
+        return [dict(row.row._mapping) for row in rows]
+
+    @app.get("/api/v1/memory/global/candidates")
+    def global_candidates(
+            _system: Annotated[OperatorIdentity, Depends(daemon_admin)]):
+        with store.connect() as db:
+            rows = db.execute("""SELECT claim_id,claim_text,created_at FROM memory_claims
+                WHERE scope IN ('global','global:') AND status='pending'
+                ORDER BY created_at,claim_id""").fetchall()
         return [dict(row.row._mapping) for row in rows]
 
     @app.post("/api/v1/compute/nodes", status_code=201)

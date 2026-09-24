@@ -138,6 +138,18 @@ class OrganizationTests(unittest.TestCase):
                 "allow_unquoted_runpod"])
             self.assertEqual(client.get(settings_path, headers=admin_a).json()[
                 "memory_authority"], "hybrid")
+            self.assertFalse(client.get(settings_path, headers=admin_a).json()[
+                "allow_remote_librarian"])
+            librarian_path = f"/api/v1/orgs/{org_a}/remote-librarian"
+            for headers in (bootstrap, operator_a):
+                self.assertEqual(client.put(librarian_path, headers=headers,
+                    json={"allow_remote_librarian": True}).status_code, 403)
+            self.assertEqual(client.put(f"/api/v1/orgs/{org_b}/remote-librarian",
+                headers=admin_a, json={"allow_remote_librarian": True}).status_code, 404)
+            self.assertEqual(client.put(librarian_path, headers=admin_a,
+                json={"allow_remote_librarian": True}).status_code, 200)
+            self.assertTrue(client.get(settings_path, headers=admin_a).json()[
+                "allow_remote_librarian"])
             memory_path = f"/api/v1/orgs/{org_a}/memory-authority"
             self.assertEqual(client.put(memory_path, headers=bootstrap,
                 json={"memory_authority": "human_gated"}).status_code, 403)

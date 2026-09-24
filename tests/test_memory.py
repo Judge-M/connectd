@@ -41,6 +41,8 @@ class MemoryTests(unittest.TestCase):
                 headers=system, json={"claim_text": "System baseline"})
             self.assertEqual(captured.status_code, 201, captured.text)
             claim_id = captured.json()["claim_id"]
+            self.assertEqual([item["claim_id"] for item in client.get(
+                "/api/v1/memory/global/candidates", headers=system).json()], [claim_id])
             self.assertEqual(client.post("/api/v1/memory/global/promote",
                 headers=org_admin, json={"claim_id": claim_id}).status_code, 403)
             self.assertEqual(client.post("/api/v1/memory/global/promote",
