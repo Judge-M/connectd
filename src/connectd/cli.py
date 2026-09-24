@@ -132,7 +132,7 @@ def main(argv: list[str] | None = None) -> None:
     from connectd.node_monitor import NodeMonitor
 
     stopped = Event()
-    monitor = Thread(target=NodeMonitor(store).run_until,
+    monitor = Thread(target=NodeMonitor(store, managers=config.compute.node_managers).run_until,
                      args=(stopped, config.compute.health_interval_seconds), daemon=True)
     monitor.start()
     try:

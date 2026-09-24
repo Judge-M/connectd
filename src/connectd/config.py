@@ -91,10 +91,31 @@ class SpendSettings(BaseModel):
         return self
 
 
+class NodeManagerSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    manager_id: str = Field(min_length=1)
+    endpoint_url: str
+    ca_cert_path: Path
+    client_cert_path: Path
+    client_key_path: Path
+    allowed_node_ids: frozenset[str] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_transport(self):
+        from urllib.parse import urlsplit
+        parsed = urlsplit(self.endpoint_url)
+        if (parsed.scheme != "https" or not parsed.hostname or not parsed.path or
+                parsed.query or parsed.fragment or parsed.username or parsed.password):
+            raise ValueError("node manager requires a plain HTTPS endpoint URL")
+        return self
+
+
 class ComputeSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     health_interval_seconds: int = Field(default=30, ge=1, le=3600)
+    node_managers: list[NodeManagerSettings] = Field(default_factory=list)
 
 
 class ExecutionProfile(BaseModel):
@@ -139,6 +160,9 @@ class ConnectdConfig(BaseModel):
         if (self.default_execution_profile == "prod_secure" and
                 not self.worker_model.uses_proxy):
             raise ValueError("prod_secure requires the authenticated model proxy")
+        manager_ids = [manager.manager_id for manager in self.compute.node_managers]
+        if len(manager_ids) != len(set(manager_ids)):
+            raise ValueError("node manager IDs must be unique")
         for profile in self.execution_profiles.values():
             if profile.grant_mode == GrantMode.STRICT_ED25519 and profile.worker_runtime == WorkerRuntime.SUBPROCESS:
                 raise ValueError("strict Ed25519 profile cannot use subprocess workers")

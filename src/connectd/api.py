@@ -146,6 +146,7 @@ class NodeCreate(BaseModel):
     tokenizer: dict | None = None
     preflight_url: str | None = None
     health_url: str | None = None
+    manager_id: str | None = None
 
 
 class RouteRequest(BaseModel):
@@ -443,11 +444,20 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                     parsed.hostname not in config.model_api.allowed_local_hosts):
                 raise HTTPException(status_code=422, detail="local node endpoint host is not allowed")
         if body.privacy_tier != "local_only":
-            if not body.endpoint_url or not body.model_id or not body.allowed_privacy_classes or not body.health_url:
-                raise HTTPException(status_code=422, detail="remote node needs endpoint, model, privacy classes, and health URL")
+            if not body.endpoint_url or not body.model_id or not body.allowed_privacy_classes or not (body.health_url or body.manager_id):
+                raise HTTPException(status_code=422, detail="remote node needs endpoint, model, privacy classes, and health source")
             if not body.endpoint_url.startswith("https://") or not all((body.ca_cert_path,
                     body.client_cert_path, body.client_key_path)):
                 raise HTTPException(status_code=422, detail="remote node requires HTTPS and mTLS paths")
+        if body.manager_id:
+            if body.privacy_tier == "local_only":
+                raise HTTPException(status_code=422, detail="local nodes use direct health checks")
+            manager = next((item for item in config.compute.node_managers
+                            if item.manager_id == body.manager_id), None)
+            if manager is None or body.node_id not in manager.allowed_node_ids:
+                raise HTTPException(status_code=422, detail="node is not approved in the configured manager")
+            if body.health_url:
+                raise HTTPException(status_code=422, detail="managed nodes use manager health reports")
         if body.billing_mode == "paid" and not body.pricing:
             raise HTTPException(status_code=422, detail="paid nodes require registry pricing and cap")
         if body.billing_mode == "paid" and not body.preflight_url:
@@ -488,7 +498,7 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         with store.connect() as db:
             db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,airgapped,billing_mode,
                 endpoint_url,model_id,max_context,allowed_privacy_json,ca_cert_path,client_cert_path,client_key_path,
-                pricing_model,tokenizer_json,preflight_url,health_url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                pricing_model,tokenizer_json,preflight_url,health_url,manager_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (body.node_id, body.provider_type, body.privacy_tier,
                  body.privacy_tier == "local_only" and not body.health_url,
                  body.airgapped, body.billing_mode,
@@ -498,7 +508,7 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                  body.ca_cert_path, body.client_cert_path, body.client_key_path,
                  json.dumps(body.pricing, sort_keys=True) if body.pricing else None,
                  json.dumps(body.tokenizer, sort_keys=True) if body.tokenizer else None,
-                 body.preflight_url, body.health_url))
+                 body.preflight_url, body.health_url, body.manager_id))
         return {"node_id": body.node_id}
 
     @app.get("/api/v1/compute/nodes/{node_id}")
@@ -513,13 +523,23 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
     def list_nodes(_operator: Annotated[None, Depends(operator)]):
         with store.connect() as db:
             rows = db.execute("""SELECT node_id,provider_type,privacy_tier,healthy,
-                model_id,last_health_at,capacity_json FROM compute_nodes ORDER BY node_id""").fetchall()
+                model_id,last_health_at,capacity_json,manager_id FROM compute_nodes ORDER BY node_id""").fetchall()
         return [dict(row.row._mapping) for row in rows]
 
     @app.post("/api/v1/compute/nodes/{node_id}/probe")
     def probe_node(node_id: str, _operator: Annotated[None, Depends(operator)]):
         from connectd.node_monitor import NodeMonitor
-        if not NodeMonitor(store).probe(node_id):
+        with store.connect() as db:
+            node = db.execute("SELECT manager_id FROM compute_nodes WHERE node_id=?", (node_id,)).fetchone()
+        if node is None:
+            raise HTTPException(status_code=404, detail="node not found")
+        monitor = NodeMonitor(store)
+        if node["manager_id"]:
+            manager = next((item for item in config.compute.node_managers
+                            if item.manager_id == node["manager_id"]), None)
+            if manager is None or not monitor.probe_manager(manager).get(node_id):
+                raise HTTPException(status_code=503, detail="manager failed authenticated health or capacity check")
+        elif not monitor.probe(node_id):
             raise HTTPException(status_code=503, detail="node failed authenticated health or capacity check")
         return {"node_id": node_id, "healthy": True}
 
