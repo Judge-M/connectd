@@ -6,7 +6,7 @@ Revises:
 
 from alembic import op
 
-from connectd.db import metadata
+from connectd.migrations.schema_0001 import metadata
 
 
 revision = "0001"

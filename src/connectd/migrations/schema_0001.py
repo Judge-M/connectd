@@ -1,6 +1,6 @@
 """Unified relational schema and SQLAlchemy engine configuration."""
 
-from sqlalchemy import Boolean, CheckConstraint, Column, Float, ForeignKey, Index, Integer, MetaData, String, Table, Text, create_engine, event
+from sqlalchemy import Boolean, CheckConstraint, Column, ForeignKey, Index, Integer, MetaData, String, Table, Text, create_engine, event
 from sqlalchemy.engine import Engine
 
 
@@ -150,14 +150,6 @@ memory_claims = Table("memory_claims", metadata,
     Column("origin", String, nullable=False),
     Column("promoted_by", String),
     Column("created_at", String, nullable=False),
-    Column("confidence", Float),
-    Column("confidence_label", String),
-    Column("valid_from", String),
-    Column("valid_until", String),
-    Column("learned_at", String),
-    Column("last_verified_at", String),
-    Column("tags_json", Text, nullable=False, server_default="[]"),
-    Column("superseded_by", String),
     CheckConstraint("status IN ('pending','promoted','rejected')"),
 )
 Index("idx_memory_recall", memory_claims.c.scope, memory_claims.c.is_trusted)
@@ -167,11 +159,6 @@ claim_provenance = Table("claim_provenance", metadata,
     Column("source_uri", Text, nullable=False),
     Column("source_hash", String, nullable=False),
     Column("created_at", String, nullable=False),
-    Column("source_id", String),
-    Column("origin", String),
-    Column("title", Text),
-    Column("location", Text),
-    Column("mime_type", String),
 )
 claim_contradictions = Table("claim_contradictions", metadata,
     Column("contradiction_id", String, primary_key=True),
@@ -195,7 +182,6 @@ compute_nodes = Table("compute_nodes", metadata,
     Column("client_cert_path", Text),
     Column("client_key_path", Text),
     Column("pricing_model", Text),
-    Column("tokenizer_json", Text),
     CheckConstraint("privacy_tier IN ('local_only','private_rented','external')"),
 )
 workload_placements = Table("workload_placements", metadata,

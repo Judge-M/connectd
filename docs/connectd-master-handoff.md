@@ -41,6 +41,8 @@ V1 supports **both SQLite and PostgreSQL** at runtime through one relational sch
 
 Unpromoted candidates remain in their source databases. Imported historical grants have `status='legacy_expired'` and can never be redeemed. The importer retains source identity mappings, records payload hashes, and validates foreign keys. A repeated import is rejected before changing destination records. The CLI requires explicit privacy classification for old tasks with missing metadata and explicit audit payload retention mode. New tool registry rows remain disabled until a reviewed execution handler is bound and an operator activates them.
 
+Memory claims retain numeric and labeled confidence, validity dates, tags, supersession, and source provenance. Full recall includes those fields and open contradiction warnings. Worker context uses only trusted promoted claims, with a brief projection when requested. The SQLite and PostgreSQL schema migration preserves the original V1 table layout as revision `0001` and adds these fields in `0002` so existing databases can upgrade.
+
 ## 5. Delivery phases
 
 1. **Package and configuration:** consolidated `control`, `governance`, `task`, `tools`, `memory`, `compute`, `router`, and `worker` modules; reference repositories remain read-only.

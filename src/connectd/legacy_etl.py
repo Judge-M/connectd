@@ -292,6 +292,7 @@ def migrate_legacy(store: Store, sources: LegacySources, *, missing_privacy_clas
                     contradicted_ids.add(contradiction["claim_b"])
             for row in _rows(brain, "claims"):
                 if (row.get("status") != "promoted" or row["id"] in contradicted_ids or
+                        row.get("superseded_by") is not None or
                         ("is_trusted" in row and not row["is_trusted"])):
                     continue
                 source = sources_by_id.get(row["source_id"])
@@ -300,13 +301,19 @@ def migrate_legacy(store: Store, sources: LegacySources, *, missing_privacy_clas
                 claim_id = _legacy_id("brainconnect", "claims", row["id"])
                 scope = f"{row.get('scope_type') or 'global'}:{row.get('scope_id') or ''}"
                 db.execute("""INSERT INTO memory_claims(claim_id,scope,claim_text,status,is_trusted,origin,
-                    promoted_by,created_at) VALUES (?,?,?,?,?,?,?,?)""", (claim_id, scope, row["text"],
-                    "promoted", True, str(row["origin"]), row["promoted_by"],
-                    _timestamp(row.get("created_at"))))
-                db.execute("""INSERT INTO claim_provenance(provenance_id,claim_id,source_uri,source_hash,created_at)
-                    VALUES (?,?,?,?,?)""", (_legacy_id("brainconnect", "sources", f"{row['id']}:{source['id']}"),
-                    claim_id, source.get("url") or source["path"], source["hash"],
-                    _timestamp(row.get("created_at"))))
+                    promoted_by,created_at,confidence,confidence_label,valid_from,valid_until,learned_at,
+                    last_verified_at,tags_json,superseded_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (claim_id, scope, row["text"], "promoted", True, str(row["origin"]),
+                     row["promoted_by"], _timestamp(row.get("created_at")), row.get("confidence"),
+                     row.get("confidence_label"), row.get("valid_from"), row.get("valid_until"),
+                     row.get("learned_at"), row.get("last_verified_at"), row.get("tags") or "[]",
+                     None))
+                db.execute("""INSERT INTO claim_provenance(provenance_id,claim_id,source_uri,source_hash,
+                    created_at,source_id,origin,title,location,mime_type) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (_legacy_id("brainconnect", "sources", f"{row['id']}:{source['id']}"), claim_id,
+                     source.get("url") or source["path"], source["hash"], _timestamp(row.get("created_at")),
+                     str(source["id"]), source.get("origin"), source.get("title"), row.get("location"),
+                     source.get("mime_type")))
                 _record(db, "brainconnect", "claims", row["id"], row, True)
                 _record(db, "brainconnect", "sources", source["id"], source, True)
                 counts["memory_claims"] += 1

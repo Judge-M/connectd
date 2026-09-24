@@ -66,6 +66,23 @@ class ClaimRequest(BaseModel):
 
 class ClaimCreate(BaseModel):
     claim_text: str = Field(min_length=1)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    confidence_label: Literal["low", "medium", "high", "verified"] | None = None
+    valid_from: str | None = None
+    valid_until: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    sources: list[dict] = Field(default_factory=list)
+
+
+class RecallRequest(BaseModel):
+    scope: str = Field(min_length=1)
+    query: str = ""
+    profile: str = "full"
+    max_items: int = Field(default=8, ge=1, le=100)
+
+
+class PromoteRequest(BaseModel):
+    confidence_label: Literal["low", "medium", "high", "verified"] | None = None
 
 
 class StepComplete(BaseModel):
@@ -360,12 +377,41 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         if identity.task_id != task_id:
             raise HTTPException(status_code=403, detail="wrong task scope")
         row = task_row(task_id)
-        return {"claim_id": memory.capture(row["memory_scope"], body.claim_text, identity.worker_id)}
+        try:
+            claim_id = memory.capture(row["memory_scope"], body.claim_text, identity.worker_id,
+                confidence=body.confidence, confidence_label=body.confidence_label,
+                valid_from=body.valid_from, valid_until=body.valid_until,
+                tags=body.tags, sources=body.sources)
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"claim_id": claim_id}
+
+    @app.post("/api/v1/tasks/{task_id}/memory/recall")
+    def worker_recall(task_id: str, body: RecallRequest,
+                      identity: Annotated[WorkerIdentity, Depends(worker)]):
+        if identity.task_id != task_id or body.scope != task_row(task_id)["memory_scope"]:
+            raise HTTPException(status_code=403, detail="wrong task scope")
+        if body.profile not in {"full", "worker_brief"}:
+            raise HTTPException(status_code=422, detail="unknown recall profile")
+        items = memory.recall_records(body.scope, max_items=body.max_items)
+        if body.profile == "worker_brief":
+            items = [{"text": item["text"], "scope": item["scope"],
+                      "trusted": item["trusted"]} for item in items]
+        return {"query": body.query, "profile": body.profile, "items": items,
+                "warnings": [], "retrieval_mode": "ledger_scope"}
+
+    @app.post("/recall")
+    def legacy_recall(body: RecallRequest, _operator: Annotated[None, Depends(operator)]):
+        return {"query": body.query, "profile": "full",
+                "items": memory.recall_records(body.scope, max_items=body.max_items),
+                "warnings": [], "retrieval_mode": "ledger_scope"}
 
     @app.post("/api/v1/memory/claims/{claim_id}/promote")
-    def promote(claim_id: str, _operator: Annotated[None, Depends(operator)]):
+    @app.post("/candidates/{claim_id}/promote")
+    def promote(claim_id: str, _operator: Annotated[None, Depends(operator)],
+                body: PromoteRequest | None = None):
         try:
-            memory.promote(claim_id, "operator")
+            memory.promote(claim_id, "operator", body.confidence_label if body else None)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"status": "promoted"}
