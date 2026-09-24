@@ -13,3 +13,4 @@ outputs/
 *.key
 *.token
 certs/
+secrets/

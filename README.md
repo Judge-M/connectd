@@ -56,7 +56,9 @@ docker compose -f compose.prod-secure.yaml up --build -d
 
 The host-side `connectd worker run-step` command needs access to the Docker engine; the gateway container does not mount its socket. `prod_secure` fails closed if its container runtime or internal network is missing. The routing target of under 100 ms for local Laya is a measurement goal, not a guaranteed latency on every host.
 
-Selecting the `gvisor` worker runtime requires Docker to report an installed `runsc` runtime; otherwise dispatch stops before launching a worker. gVisor is a sandboxed container runtime. Firecracker microVM execution requires a separate Linux/KVM launcher and is tracked independently from this container boundary.
+Selecting the `gvisor` worker runtime requires Docker to report an installed `runsc` runtime; otherwise dispatch stops before launching a worker. gVisor is a sandboxed container runtime. `firecracker` is a pluggable `MicroVMAdapter` contract for Linux hosts with writable `/dev/kvm`; dispatch fails closed unless an adapter is explicitly installed. The host plugin must provide its own jailed guest image and isolated transport.
+
+The provider-neutral `ProvisioningAdapter` contract has a RunPod REST v1 reference implementation for Pod create, read, and delete operations. Its API key is resolved at call time from `RUNPOD_API_KEY` or an explicitly configured local env file such as `secrets/connectd.env`; the `secrets/` directory is ignored by Git. Provisioned Pods do not become trusted inference nodes automatically: operator-owned node registry metadata and mTLS health admission still apply. Paid automatic lifecycle dispatch remains gated until the pre-create price guarantee is selected.
 
 ## Legacy import
 

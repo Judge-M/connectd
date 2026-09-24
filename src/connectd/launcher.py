@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID
+from typing import Protocol
 
 from pydantic import BaseModel, Field
 
@@ -42,10 +43,19 @@ def select_runtime(profile: ExecutionProfile, effect_tier: int) -> WorkerRuntime
     return runtime
 
 
+class MicroVMAdapter(Protocol):
+    """A host plugin must jail the VM, supply its own guest image, and isolate egress."""
+
+    def run(self, payload: WorkerInput, worktree: Path,
+            timeout_seconds: int) -> WorkerReport: ...
+
+
 class WorkerLauncher:
-    def __init__(self, image: str = "connectd-worker:local", docker_network: str | None = None):
+    def __init__(self, image: str = "connectd-worker:local", docker_network: str | None = None,
+                 microvm_adapter: MicroVMAdapter | None = None):
         self.image = image
         self.docker_network = docker_network
+        self.microvm_adapter = microvm_adapter
 
     @staticmethod
     def _container_url(url: str, secure: bool, expected_host: str) -> str:
@@ -89,6 +99,14 @@ class WorkerLauncher:
         if not worktree.is_dir():
             raise ValueError("worker worktree does not exist")
         runtime = select_runtime(profile, effect_tier)
+        if runtime == WorkerRuntime.FIRECRACKER:
+            kvm = Path("/dev/kvm")
+            if (not sys.platform.startswith("linux") or not kvm.exists() or
+                    not os.access(kvm, os.R_OK | os.W_OK)):
+                raise SecurityBoundaryViolation("Firecracker requires a Linux host with writable /dev/kvm")
+            if self.microvm_adapter is None:
+                raise SecurityBoundaryViolation("Firecracker microVM adapter is not configured")
+            return self.microvm_adapter.run(payload, worktree.resolve(), timeout_seconds)
         if runtime == WorkerRuntime.SUBPROCESS:
             command = [sys.executable, "-m", "connectd.worker_entry"]
             # A subprocess is a development convenience, not an OS sandbox.

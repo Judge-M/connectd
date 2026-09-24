@@ -323,6 +323,24 @@ class CoreTests(unittest.TestCase):
                 returncode=0, stdout='{"runsc":{},"runc":{}}')):
             WorkerLauncher._assert_gvisor_runtime()
 
+    def test_firecracker_requires_kvm_and_configured_adapter(self):
+        import tempfile
+        from unittest.mock import patch
+        from connectd.config import WorkerRuntime
+
+        profile = ConnectdConfig().profile("prod_secure").model_copy(
+            update={"worker_runtime": WorkerRuntime.FIRECRACKER})
+        with tempfile.TemporaryDirectory() as temp:
+            worktree = Path(temp)
+            with patch("connectd.launcher.sys.platform", "win32"):
+                with self.assertRaisesRegex(SecurityBoundaryViolation, "Linux host"):
+                    WorkerLauncher().run(None, worktree, profile, 1)
+            with (patch("connectd.launcher.sys.platform", "linux"),
+                  patch("connectd.launcher.Path.exists", return_value=True),
+                  patch("connectd.launcher.os.access", return_value=True)):
+                with self.assertRaisesRegex(SecurityBoundaryViolation, "adapter is not configured"):
+                    WorkerLauncher().run(None, worktree, profile, 1)
+
     def test_workbench_stays_inside_worktree_and_honors_authority(self):
         root = Path(__file__).parents[1] / "work" / ("workspace-" + uuid.uuid4().hex)
         root.mkdir()

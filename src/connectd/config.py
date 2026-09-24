@@ -25,6 +25,7 @@ class WorkerRuntime(str, Enum):
     DOCKER = "docker"
     PODMAN = "podman"
     GVISOR = "gvisor"
+    FIRECRACKER = "firecracker"
 
 
 class DaemonSettings(BaseModel):
