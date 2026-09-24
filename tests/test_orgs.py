@@ -246,14 +246,17 @@ class OrganizationTests(unittest.TestCase):
             memory = MemoryLedger(store)
             claim = memory.capture("repo:shared", "Only Alpha knows", "tester", org_id=org_a)
             memory.promote(claim, "bootstrap")
+            global_claim = memory.capture("global", "System fact", "tester", org_id="default")
+            memory.promote(global_claim, "system-admin")
             auth = AuthService(store, "b" * 40)
             token_a = auth.issue_worker(task_a, "a")
             token_b = auth.issue_worker(task_b, "b")
             self.assertEqual(client.get(f"/api/v1/tasks/{task_a}/context-pack",
                 headers={"Authorization": "Bearer " + token_a}).json()["memory"],
-                ["Only Alpha knows"])
+                ["Only Alpha knows", "System fact"])
             self.assertEqual(client.get(f"/api/v1/tasks/{task_b}/context-pack",
-                headers={"Authorization": "Bearer " + token_b}).json()["memory"], [])
+                headers={"Authorization": "Bearer " + token_b}).json()["memory"],
+                ["System fact"])
             store.dispose()
 
 

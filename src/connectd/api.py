@@ -19,7 +19,7 @@ from connectd.auth import AuthService, AuthenticationError, OperatorIdentity, Wo
 from connectd.compute import PlacementDenied, PrivacyClass, place
 from connectd.config import ConnectdConfig, MemoryAuthority
 from connectd.governance import AuthorizationError, Governance
-from connectd.memory import MemoryLedger
+from connectd.memory import MemoryLedger, effective_memory_authority
 from connectd.policy import CedarPolicy
 from connectd.store import Store
 from connectd.task import Lease, LeaseError, TaskManager
@@ -116,6 +116,10 @@ class PromoteRequest(BaseModel):
     confidence_label: Literal["low", "medium", "high", "verified"] | None = None
 
 
+class GlobalPromoteRequest(PromoteRequest):
+    claim_id: str = Field(min_length=1)
+
+
 class StepComplete(BaseModel):
     lease: dict
     summary: str
@@ -151,6 +155,10 @@ class ToolCreate(BaseModel):
     is_financial: bool = False
     cost_per_invocation_cents: int = Field(default=0, ge=0)
     pricing_model: dict | None = None
+
+
+class BindingActivation(BaseModel):
+    handler_id: str = Field(min_length=1)
 
 
 class ToolInvoke(BaseModel):
@@ -202,9 +210,17 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                             profiles=config.execution_profiles, policy_evaluator=policy.evaluate,
                             spend_reset_timezone=config.spend.reset_timezone)
     gateway = ToolGateway(store, governance)
-    gateway.register_handler("echo", lambda args: {"echo": args})
+    builtin_handlers = {"echo": lambda args: {"echo": args}}
+    for handler_id, handler in builtin_handlers.items():
+        gateway.register_handler(handler_id, handler)
     for tool_id, handler in (tool_handlers or {}).items():
         gateway.register_handler(tool_id, handler)
+    with store.connect() as db:
+        reviewed_bindings = db.execute("""SELECT tool_id,name,handler_id FROM tool_registry
+            WHERE active=TRUE AND handler_id IS NOT NULL""").fetchall()
+    for binding in reviewed_bindings:
+        if binding["handler_id"] in builtin_handlers and binding["name"] == binding["handler_id"]:
+            gateway.register_handler(binding["tool_id"], builtin_handlers[binding["handler_id"]])
     bearer = HTTPBearer(auto_error=False)
     app = FastAPI(title="connectd", version=__version__)
 
@@ -222,29 +238,29 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
     def tenant_operator(token: Annotated[str, Depends(raw_token)]) -> OperatorIdentity:
         return require_role(token, "operator")
 
-    def operator(token: Annotated[str, Depends(raw_token)]) -> OperatorIdentity:
-        identity = require_role(token, "operator")
-        if not identity.bootstrap:
-            raise HTTPException(status_code=403, detail="global operation requires bootstrap operator")
-        return identity
-
     def reader(token: Annotated[str, Depends(raw_token)]) -> OperatorIdentity:
         return require_role(token, "viewer")
 
     def admin(token: Annotated[str, Depends(raw_token)]) -> OperatorIdentity:
         return require_role(token, "admin")
 
+    def daemon_admin(token: Annotated[str, Depends(raw_token)]) -> OperatorIdentity:
+        identity = require_role(token, "daemon_admin")
+        if identity.role != "daemon_admin":
+            raise HTTPException(status_code=403, detail="daemon administrator required")
+        return identity
+
     def bootstrap(identity: Annotated[OperatorIdentity, Depends(admin)]) -> OperatorIdentity:
-        if not identity.bootstrap:
-            raise HTTPException(status_code=403, detail="bootstrap operator required")
+        if not identity.bootstrap and identity.role != "daemon_admin":
+            raise HTTPException(status_code=403, detail="system administrator required")
         return identity
 
     def require_org(identity: OperatorIdentity, org_id: str) -> None:
-        if not identity.bootstrap and identity.org_id != org_id:
+        if not identity.bootstrap and identity.role != "daemon_admin" and identity.org_id != org_id:
             raise HTTPException(status_code=404, detail="organization not found")
 
     def require_org_admin(identity: OperatorIdentity, org_id: str) -> None:
-        if identity.bootstrap:
+        if identity.bootstrap or identity.role != "admin":
             raise HTTPException(status_code=403,
                                 detail="target organization admin token required")
         require_org(identity, org_id)
@@ -457,7 +473,7 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         return [dict(row.row._mapping) for row in rows]
 
     @app.get("/planes")
-    def planes(_operator: Annotated[None, Depends(operator)]):
+    def planes(_system: Annotated[OperatorIdentity, Depends(bootstrap)]):
         return {"work": "ready", "governance": "ready", "tools": "ready",
                 "memory": "ready", "compute": "ready", "router": config.router.provider}
 
@@ -513,7 +529,7 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                 "records": [dict(row.row._mapping) for row in records]}
 
     @app.get("/audit")
-    def legacy_audit_integrity(_operator: Annotated[None, Depends(operator)]):
+    def legacy_audit_integrity(_system: Annotated[OperatorIdentity, Depends(bootstrap)]):
         with store.connect() as db:
             rows = db.execute("SELECT * FROM legacy_tool_audit ORDER BY seq").fetchall()
         previous = "0" * 64
@@ -604,21 +620,38 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
             raise HTTPException(status_code=403, detail="wrong task scope")
         row = task_row(task_id)
         return {"task_id": task_id, "title": row["title"], "privacy_class": row["privacy_class"],
-                "memory": memory.recall(row["memory_scope"], org_id=row["org_id"])}
+                "memory": memory.recall(row["memory_scope"], org_id=row["org_id"],
+                                        task_id=task_id)}
 
     @app.post("/api/v1/tasks/{task_id}/memory/capture", status_code=201)
     def capture(task_id: str, body: ClaimCreate, identity: Annotated[WorkerIdentity, Depends(worker)]):
         if identity.task_id != task_id:
             raise HTTPException(status_code=403, detail="wrong task scope")
         row = task_row(task_id)
+        if row["is_terminal"]:
+            raise HTTPException(status_code=409, detail="task is terminal")
+        profile = config.execution_profiles.get(row["execution_profile"])
+        if profile is None:
+            raise HTTPException(status_code=503, detail="task memory profile is unavailable")
+        with store.connect() as db:
+            org = db.execute("SELECT memory_authority FROM organizations WHERE org_id=?",
+                             (row["org_id"],)).fetchone()
+        if org is None:
+            raise HTTPException(status_code=503, detail="organization memory policy is unavailable")
         try:
-            claim_id = memory.capture(row["memory_scope"], body.claim_text, identity.worker_id,
-                confidence=body.confidence, confidence_label=body.confidence_label,
-                valid_from=body.valid_from, valid_until=body.valid_until,
-                tags=body.tags, sources=body.sources, org_id=row["org_id"])
+            authority = effective_memory_authority(org["memory_authority"],
+                                                    profile.memory_authority.value)
+            claim_id = memory.capture(f"task:{task_id}", body.claim_text,
+                identity.worker_id, confidence=body.confidence,
+                confidence_label=body.confidence_label, valid_from=body.valid_from,
+                valid_until=body.valid_until, tags=body.tags, sources=body.sources,
+                org_id=row["org_id"], task_id=task_id,
+                auto_promote=authority != "human_gated")
         except (ValueError, KeyError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"claim_id": claim_id}
+        return {"claim_id": claim_id, "scope": f"task:{task_id}",
+                "status": "pending" if authority == "human_gated" else "promoted",
+                "memory_authority": authority}
 
     @app.post("/api/v1/tasks/{task_id}/memory/recall")
     def worker_recall(task_id: str, body: RecallRequest,
@@ -629,7 +662,8 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
             raise HTTPException(status_code=422, detail="unknown recall profile")
         row = task_row(task_id)
         items = memory.recall_records(body.scope, active_only=True,
-                                      max_items=body.max_items, org_id=row["org_id"])
+                                      max_items=body.max_items, org_id=row["org_id"],
+                                      task_id=task_id)
         if body.profile == "worker_brief":
             items = [{"text": item["text"], "scope": item["scope"],
                       "trusted": item["trusted"]} for item in items]
@@ -638,27 +672,77 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
 
     @app.post("/api/v1/memory/recall")
     @app.post("/recall")
-    def legacy_recall(body: RecallRequest, _operator: Annotated[None, Depends(operator)]):
+    def legacy_recall(body: RecallRequest,
+                      identity: Annotated[OperatorIdentity, Depends(reader)]):
         return {"query": body.query, "profile": "full",
                 "items": memory.recall_records(body.scope, include_pending=True,
-                    trusted_only=False, max_items=body.max_items),
+                    trusted_only=False, max_items=body.max_items,
+                    org_id=identity.org_id or "default"),
                 "warnings": [], "retrieval_mode": "ledger_scope"}
 
     @app.post("/api/v1/memory/claims/{claim_id}/promote")
     @app.post("/candidates/{claim_id}/promote")
-    def promote(claim_id: str, _operator: Annotated[None, Depends(operator)],
+    def promote(claim_id: str, identity: Annotated[OperatorIdentity, Depends(admin)],
                 body: PromoteRequest | None = None):
+        with store.connect() as db:
+            claim = db.execute("SELECT org_id,scope FROM memory_claims WHERE claim_id=?",
+                               (claim_id,)).fetchone()
+        if claim is None:
+            raise HTTPException(status_code=404, detail="claim not found")
+        if claim["scope"] in {"global", "global:"}:
+            if identity.role != "daemon_admin":
+                raise HTTPException(status_code=403, detail="daemon administrator required")
+        else:
+            require_org_admin(identity, claim["org_id"])
         try:
-            memory.promote(claim_id, "operator", body.confidence_label if body else None)
+            memory.promote(claim_id, identity.user_id,
+                           body.confidence_label if body else None)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"status": "promoted"}
 
+    @app.post("/api/v1/memory/global/capture", status_code=201)
+    def capture_global(body: ClaimCreate,
+                       identity: Annotated[OperatorIdentity, Depends(daemon_admin)]):
+        claim_id = memory.capture("global", body.claim_text, identity.user_id,
+            confidence=body.confidence, confidence_label=body.confidence_label,
+            valid_from=body.valid_from, valid_until=body.valid_until,
+            tags=body.tags, sources=body.sources)
+        return {"claim_id": claim_id, "scope": "global", "status": "pending"}
+
+    @app.post("/api/v1/memory/global/promote")
+    def promote_global(body: GlobalPromoteRequest,
+                       identity: Annotated[OperatorIdentity, Depends(daemon_admin)]):
+        with store.connect() as db:
+            claim = db.execute("SELECT scope FROM memory_claims WHERE claim_id=?",
+                               (body.claim_id,)).fetchone()
+        if claim is None or claim["scope"] not in {"global", "global:"}:
+            raise HTTPException(status_code=404, detail="global claim not found")
+        try:
+            memory.promote(body.claim_id, identity.user_id, body.confidence_label)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"claim_id": body.claim_id, "scope": "global", "status": "promoted"}
+
+    @app.post("/api/v1/memory/claims/{claim_id}/promote-to-org", status_code=201)
+    def promote_to_org(claim_id: str,
+                       identity: Annotated[OperatorIdentity, Depends(admin)]):
+        require_org_admin(identity, identity.org_id or "")
+        try:
+            new_id = memory.promote_to_organization(claim_id, identity.org_id,
+                                                    identity.user_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"claim_id": new_id, "scope": f"org:{identity.org_id}",
+                "source_claim_id": claim_id, "status": "promoted"}
+
     @app.get("/api/v1/memory/candidates")
     @app.get("/candidates")
-    def candidates(_operator: Annotated[None, Depends(operator)]):
+    def candidates(identity: Annotated[OperatorIdentity, Depends(admin)]):
         with store.connect() as db:
-            rows = db.execute("SELECT * FROM memory_claims WHERE status='pending' ORDER BY created_at").fetchall()
+            rows = db.execute("""SELECT * FROM memory_claims WHERE status='pending'
+                AND org_id=? ORDER BY created_at""",
+                (identity.org_id or "default",)).fetchall()
         return [dict(row.row._mapping) for row in rows]
 
     @app.post("/api/v1/compute/nodes", status_code=201)
@@ -817,7 +901,7 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                     row["owner_org_id"] == identity.org_id]
         proposals = []
         for row in rows:
-            candidate = row["name"] if row["name"] in gateway.handlers else None
+            candidate = row["name"] if row["name"] in builtin_handlers else None
             proposals.append({
                 "tool_id": row["tool_id"], "legacy_name": row["name"],
                 "source": row["domain_path"], "schema": json.loads(row["schema_json"]),
@@ -837,18 +921,29 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         return [dict(row.row._mapping) for row in visible]
 
     @app.post("/api/v1/tools/{tool_id}/activate")
-    def activate_tool(tool_id: str, identity: Annotated[OperatorIdentity, Depends(admin)]):
+    def activate_tool(tool_id: str, identity: Annotated[OperatorIdentity, Depends(admin)],
+                      body: BindingActivation | None = None):
         require_org_admin(identity, identity.org_id or "")
         with store.connect() as db:
-            row = db.execute("SELECT owner_org_id,active FROM tool_registry WHERE tool_id=?",
-                             (tool_id,)).fetchone()
+            row = db.execute("""SELECT owner_org_id,name,active,origin FROM tool_registry
+                WHERE tool_id=?""", (tool_id,)).fetchone()
             if row is None or row["owner_org_id"] != identity.org_id or row["active"]:
                 raise HTTPException(status_code=404, detail="inactive tool not found")
-            if tool_id not in gateway.handlers:
-                raise HTTPException(status_code=409, detail="tool has no reviewed execution handler")
-            db.execute("""UPDATE tool_registry SET active=TRUE,status='active'
-                WHERE tool_id=? AND active=FALSE""", (tool_id,))
-        return {"tool_id": tool_id, "status": "active"}
+            handler_id = body.handler_id if body else tool_id
+            if row["origin"] != "connectd":
+                if handler_id not in builtin_handlers or row["name"] != handler_id:
+                    raise HTTPException(status_code=409,
+                        detail="legacy tools require a reviewed matching built-in handler")
+                handler = builtin_handlers[handler_id]
+            elif handler_id == tool_id and tool_id in gateway.handlers:
+                handler = gateway.handlers[tool_id]
+            else:
+                raise HTTPException(status_code=409,
+                    detail="tool has no reviewed execution handler")
+            db.execute("""UPDATE tool_registry SET active=TRUE,status='active',handler_id=?
+                WHERE tool_id=? AND active=FALSE""", (handler_id, tool_id))
+        gateway.register_handler(tool_id, handler)
+        return {"tool_id": tool_id, "status": "active", "handler_id": handler_id}
 
     @app.get("/api/v1/tools/{tool_id}")
     def get_tool(tool_id: str, identity: Annotated[WorkerIdentity, Depends(worker)]):
@@ -923,9 +1018,12 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                 "latency_ms": decision.latency_ms, "confidences": decision.confidences}
 
     @app.post("/api/v1/governance/approvals", status_code=201)
-    def approve_action(body: ApprovalRequest, _operator: Annotated[None, Depends(operator)]):
+    def approve_action(body: ApprovalRequest,
+                       identity: Annotated[OperatorIdentity, Depends(tenant_operator)]):
+        task_row(body.task_id, identity)
         return {"approval_id": governance.approve(body.task_id, body.principal_id,
-                                                    body.tool_id, body.args, "operator")}
+                                                    body.tool_id, body.args,
+                                                    identity.user_id)}
 
     @app.get("/api/v1/tasks/{task_id}/placement")
     def placement(task_id: str, identity: Annotated[WorkerIdentity, Depends(worker)]):

@@ -24,6 +24,13 @@ operator_users = Table("operator_users", metadata,
     Column("created_at", String, nullable=False),
     CheckConstraint("role IN ('admin','operator','viewer')"),
 )
+daemon_admins = Table("daemon_admins", metadata,
+    Column("admin_id", String, primary_key=True),
+    Column("display_name", String, nullable=False),
+    Column("token_hash", String, nullable=False, unique=True),
+    Column("active", Boolean, nullable=False, server_default="1"),
+    Column("created_at", String, nullable=False),
+)
 
 tasks = Table("tasks", metadata,
     Column("task_id", String, primary_key=True),
@@ -82,6 +89,7 @@ tool_registry = Table("tool_registry", metadata,
     Column("is_financial", Boolean, nullable=False, server_default="0"),
     Column("cost_per_invocation_cents", Integer, nullable=False, server_default="0"),
     Column("pricing_model", String),
+    Column("handler_id", String),
     CheckConstraint("effect_tier BETWEEN 0 AND 2"),
     CheckConstraint("cost_per_invocation_cents >= 0"),
 )

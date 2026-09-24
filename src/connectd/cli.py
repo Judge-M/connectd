@@ -54,12 +54,26 @@ def operator_token(config, parser: argparse.ArgumentParser) -> str:
     return token
 
 
+def worker_operator_token(config, parser: argparse.ArgumentParser) -> str:
+    token = os.environ.get("CONNECTD_CLIENT_TOKEN")
+    token_file = os.environ.get("CONNECTD_CLIENT_TOKEN_FILE")
+    if token and token_file:
+        parser.error("client token and client token file cannot both be set")
+    if token_file:
+        token = Path(token_file).read_text(encoding="utf-8").strip()
+    if not token:
+        parser.error("CONNECTD_CLIENT_TOKEN or CONNECTD_CLIENT_TOKEN_FILE is required")
+    return token
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="connectd")
     parser.add_argument("--config", default="config/connectd.yaml")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("serve")
     commands.add_parser("model-proxy")
+    genesis = commands.add_parser("init")
+    genesis.add_argument("--admin-name", required=True)
     key_command = commands.add_parser("init-key")
     key_command.add_argument("--path", type=Path)
     worker = commands.add_parser("worker")
@@ -87,6 +101,17 @@ def main(argv: list[str] | None = None) -> None:
         initialize_signing_key(key_path)
         print(f"created {key_path}")
         return
+    if args.command == "init":
+        from connectd.auth import AuthService
+
+        upgrade_database(config.daemon.database_url)
+        admin_id, admin_token = AuthService(
+            Store(config.daemon.database_url), operator_token(config, parser)).genesis(
+                args.admin_name)
+        print(f"daemon_admin_id={admin_id}")
+        print(f"daemon_admin_token={admin_token}")
+        print("Store this token now; the bootstrap token is expired.")
+        return
     if args.command == "db":
         upgrade_database(config.daemon.database_url)
         if args.action == "migrate-legacy":
@@ -107,7 +132,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "worker":
         from connectd.dispatch import StepDispatcher
 
-        report = StepDispatcher(config, args.control_plane_url, operator_token(config, parser)).run_step(
+        report = StepDispatcher(config, args.control_plane_url, worker_operator_token(config, parser)).run_step(
             args.task_id, args.step_id, args.worktree, args.tool)
         print(report.model_dump_json())
         return

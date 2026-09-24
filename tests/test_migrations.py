@@ -39,6 +39,8 @@ class MemoryMigrationTests(unittest.TestCase):
                                  ("migration-org",)).fetchone()
                 claim = db.execute("SELECT task_id,claim_text FROM memory_claims WHERE claim_id=?",
                                    ("migration-claim",)).fetchone()
+                db.execute("SELECT handler_id FROM tool_registry LIMIT 1").fetchone()
+                db.execute("SELECT admin_id FROM daemon_admins LIMIT 1").fetchone()
             self.assertEqual(org["memory_authority"], "hybrid")
             self.assertIsNone(claim["task_id"])
             self.assertEqual(claim["claim_text"], "Vetted")

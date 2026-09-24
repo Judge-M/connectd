@@ -37,19 +37,44 @@ class AuthService:
         self._operator_token_hash = hashlib.sha256(operator_token.encode()).digest()
 
     def require_operator(self, token: str, minimum_role: str = "operator") -> OperatorIdentity:
-        ranks = {"viewer": 0, "operator": 1, "admin": 2}
+        ranks = {"viewer": 0, "operator": 1, "admin": 2, "daemon_admin": 3}
         if minimum_role not in ranks:
             raise ValueError("unknown minimum role")
         actual = hashlib.sha256(token.encode()).digest()
-        if hmac.compare_digest(actual, self._operator_token_hash):
-            return OperatorIdentity("bootstrap", None, "admin", True)
+        bootstrap_match = hmac.compare_digest(actual, self._operator_token_hash)
         token_hash = actual.hex()
         with self.store.connect() as db:
+            genesis_done = db.execute("SELECT 1 FROM daemon_admins LIMIT 1").fetchone()
+            if bootstrap_match:
+                if genesis_done is None:
+                    return OperatorIdentity("bootstrap", None, "admin", True)
+                raise AuthenticationError("bootstrap token expired after genesis")
+            system_admin = db.execute("""SELECT admin_id,active FROM daemon_admins
+                WHERE token_hash=?""", (token_hash,)).fetchone()
+            if system_admin is not None:
+                if system_admin["active"] and ranks["daemon_admin"] >= ranks[minimum_role]:
+                    return OperatorIdentity(system_admin["admin_id"], None,
+                                            "daemon_admin")
+                raise AuthenticationError("daemon administrator is inactive")
             row = db.execute("""SELECT user_id,org_id,role,active FROM operator_users
                 WHERE token_hash=?""", (token_hash,)).fetchone()
         if row is None or not row["active"] or ranks.get(row["role"], -1) < ranks[minimum_role]:
             raise AuthenticationError("operator authentication failed")
         return OperatorIdentity(row["user_id"], row["org_id"], row["role"])
+
+    def genesis(self, display_name: str) -> tuple[str, str]:
+        if not display_name.strip():
+            raise ValueError("daemon administrator name is required")
+        token = "sys_" + secrets.token_urlsafe(32)
+        admin_id = str(uuid4())
+        with self.store.connect() as db:
+            if db.execute("SELECT 1 FROM daemon_admins LIMIT 1").fetchone():
+                raise ValueError("genesis has already completed")
+            db.execute("""INSERT INTO daemon_admins(admin_id,display_name,token_hash,
+                created_at) VALUES (?,?,?,?)""",
+                (admin_id, display_name.strip(), hashlib.sha256(token.encode()).hexdigest(),
+                 utcnow().isoformat()))
+        return admin_id, token
 
     def issue_operator(self, org_id: str, display_name: str, role: str) -> tuple[str, str]:
         if role not in {"admin", "operator", "viewer"}:

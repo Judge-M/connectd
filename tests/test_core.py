@@ -256,12 +256,21 @@ class CoreTests(unittest.TestCase):
         task_id = created.json()["task_id"]
         token = client.post(f"/api/v1/tasks/{task_id}/worker-sessions", headers=operator, json={"worker_id": "agent"}).json()["token"]
         worker = {"Authorization": "Bearer " + token}
+        with self.store.connect() as db:
+            db.execute("UPDATE organizations SET memory_authority='human_gated' WHERE org_id='default'")
         captured = client.post(f"/api/v1/tasks/{task_id}/memory/capture", headers=worker, json={"claim_text": "Verified fact"})
         self.assertEqual(captured.status_code, 201)
         claim_id = captured.json()["claim_id"]
         self.assertEqual(client.post(f"/api/v1/memory/claims/{claim_id}/promote", headers=worker).status_code, 403)
         self.assertEqual(client.get(f"/api/v1/tasks/{task_id}/context-pack", headers=worker).json()["memory"], [])
-        self.assertEqual(client.post(f"/api/v1/memory/claims/{claim_id}/promote", headers=operator).status_code, 200)
+        from connectd.auth import AuthService
+        _, admin_token = AuthService(self.store, "o" * 40).issue_operator(
+            "default", "Memory admin", "admin")
+        admin = {"Authorization": "Bearer " + admin_token}
+        self.assertEqual(client.post(f"/api/v1/memory/claims/{claim_id}/promote",
+                                     headers=operator).status_code, 403)
+        self.assertEqual(client.post(f"/api/v1/memory/claims/{claim_id}/promote",
+                                     headers=admin).status_code, 200)
         self.assertEqual(client.get(f"/api/v1/tasks/{task_id}/context-pack", headers=worker).json()["memory"], ["Verified fact"])
 
     def test_task_profile_is_pinned_for_grant_policy(self):
@@ -794,6 +803,29 @@ class CoreTests(unittest.TestCase):
         with self.store.connect() as db:
             self.assertFalse(db.execute(
                 "SELECT active FROM tool_registry WHERE tool_id='legacy-echo'").fetchone()[0])
+        path = "/api/v1/tools/legacy-echo/activate"
+        bootstrap = {"Authorization": "Bearer " + "o" * 40}
+        admin = self.default_admin_headers("o" * 40)
+        self.assertEqual(client.post(path, headers=bootstrap,
+                                     json={"handler_id": "echo"}).status_code, 403)
+        self.assertEqual(client.post(path, headers=admin,
+                                     json={"handler_id": "unknown"}).status_code, 409)
+        self.assertEqual(client.post(path, headers=admin,
+                                     json={"handler_id": "echo"}).status_code, 200)
+        with self.store.connect() as db:
+            binding = db.execute("SELECT active,handler_id FROM tool_registry WHERE tool_id=?",
+                                 ("legacy-echo",)).fetchone()
+            db.execute("UPDATE tasks SET execution_profile='dev_fast' WHERE task_id='task-1'")
+        self.assertTrue(binding["active"])
+        self.assertEqual(binding["handler_id"], "echo")
+        restarted = TestClient(create_app(ConnectdConfig(), self.store,
+            Ed25519PrivateKey.generate(), "o" * 40))
+        worker_token = AuthService(self.store, "o" * 40).issue_worker("task-1", "worker")
+        invoked = restarted.post("/api/v1/tools/invoke",
+            headers={"Authorization": "Bearer " + worker_token},
+            json={"task_id": "task-1", "tool_id": "legacy-echo", "args": {"x": 1}})
+        self.assertEqual(invoked.status_code, 200, invoked.text)
+        self.assertEqual(invoked.json()["result"], {"echo": {"x": 1}})
 
     def test_local_node_cannot_name_external_inference_host(self):
         from fastapi.testclient import TestClient
