@@ -190,3 +190,34 @@ class RunPodAdapter:
     def delete(self, pod_id: str) -> None:
         self._request("DELETE", "/pods/" + self._pod_id(pod_id))
 
+
+
+class BoundedProvisioner:
+    """Require a catalog quote before create and verify the reported Pod rate."""
+
+    def __init__(self, adapter: ProvisioningAdapter):
+        self.adapter = adapter
+
+    def create(self, request: PodRequest, max_hourly_usd: Decimal,
+               *, allow_unquoted: bool = False) -> PodInfo:
+        if (not isinstance(max_hourly_usd, Decimal) or
+                not max_hourly_usd.is_finite() or max_hourly_usd <= 0):
+            raise ProvisioningError("a positive operator hourly USD cap is required")
+        try:
+            gpu_quote = self.adapter.quote(request)
+        except ProvisioningError:
+            if not allow_unquoted:
+                raise
+            gpu_quote = None
+        if gpu_quote is not None and gpu_quote.gpu_hourly_usd > max_hourly_usd:
+            raise ProvisioningError("GPU catalog quote exceeds the operator hourly cap")
+        pod = self.adapter.create(request)
+        if pod.hourly_usd > max_hourly_usd:
+            try:
+                self.adapter.delete(pod.pod_id)
+            except ProvisioningError as exc:
+                raise ProvisioningError(
+                    f"Pod {pod.pod_id} exceeds the hourly cap and automatic deletion failed"
+                ) from exc
+            raise ProvisioningError("created Pod rate exceeds the operator hourly cap")
+        return pod

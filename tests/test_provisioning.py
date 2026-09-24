@@ -2,14 +2,16 @@
 
 import os
 import tempfile
+from decimal import Decimal
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 
 from connectd.provisioning import (
-    LocalSecretResolver, PodRequest, ProvisioningError, RunPodAdapter,
+    BoundedProvisioner, LocalSecretResolver, PodInfo, PodQuote, PodRequest,
+    ProvisioningError, RunPodAdapter,
 )
 
 
@@ -72,6 +74,34 @@ class ProvisioningTests(unittest.TestCase):
                     RunPodAdapter(LocalSecretResolver(), client=client).quote(
                         PodRequest(name="quoted", gpu_type_id="gpu",
                                    image_name="operator/image"))
+
+    def test_bounded_provisioner_requires_quote_and_deletes_over_cap(self):
+        request = PodRequest(name="model", gpu_type_id="gpu", image_name="image")
+        adapter = Mock()
+        adapter.quote.return_value = PodQuote(Decimal("0.50"), "HIGH")
+        adapter.create.return_value = PodInfo("pod-123", Decimal("0.80"), "RUNNING")
+        with self.assertRaisesRegex(ProvisioningError, "created Pod rate"):
+            BoundedProvisioner(adapter).create(request, Decimal("0.75"))
+        adapter.delete.assert_called_once_with("pod-123")
+        adapter.create.reset_mock()
+        adapter.delete.reset_mock()
+        adapter.quote.side_effect = ProvisioningError("quote unavailable")
+        with self.assertRaisesRegex(ProvisioningError, "quote unavailable"):
+            BoundedProvisioner(adapter).create(request, Decimal("0.75"))
+        adapter.create.assert_not_called()
+        adapter.create.return_value = PodInfo("pod-456", Decimal("0.60"), "RUNNING")
+        self.assertEqual(BoundedProvisioner(adapter).create(
+            request, Decimal("0.75"), allow_unquoted=True).pod_id, "pod-456")
+        adapter.create.assert_called_once_with(request)
+        adapter.delete.assert_not_called()
+
+    def test_bounded_provisioner_rejects_high_quote_before_create(self):
+        request = PodRequest(name="model", gpu_type_id="gpu", image_name="image")
+        adapter = Mock()
+        adapter.quote.return_value = PodQuote(Decimal("1.00"), "HIGH")
+        with self.assertRaisesRegex(ProvisioningError, "catalog quote exceeds"):
+            BoundedProvisioner(adapter).create(request, Decimal("0.75"))
+        adapter.create.assert_not_called()
 
     def test_local_env_file_secret_and_missing_key(self):
         with tempfile.TemporaryDirectory() as temp:
