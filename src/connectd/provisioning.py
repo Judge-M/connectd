@@ -6,6 +6,7 @@ import os
 import re
 import stat
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Protocol
@@ -49,6 +50,15 @@ class PodInfo:
 
 
 @dataclass(frozen=True)
+class PodBilling:
+    pod_id: str
+    total_usd: Decimal
+    gpu_usd: Decimal
+    disk_usd: Decimal
+    cpu_usd: Decimal
+
+
+@dataclass(frozen=True)
 class PodQuote:
     gpu_hourly_usd: Decimal
     availability: str
@@ -60,6 +70,7 @@ class ProvisioningAdapter(Protocol):
     def create(self, request: PodRequest) -> PodInfo: ...
     def get(self, pod_id: str) -> PodInfo: ...
     def delete(self, pod_id: str) -> None: ...
+    def billing(self, pod_id: str, started_at: datetime, ended_at: datetime) -> PodBilling: ...
 
 
 class LocalSecretResolver:
@@ -189,6 +200,57 @@ class RunPodAdapter:
 
     def delete(self, pod_id: str) -> None:
         self._request("DELETE", "/pods/" + self._pod_id(pod_id))
+
+    def billing(self, pod_id: str, started_at: datetime, ended_at: datetime) -> PodBilling:
+        """Read provider charges for one Pod after its bounded lease ends.
+
+        RunPod rounds query times to hour buckets. A Pod ID is unique to the
+        lease, so bucket widening cannot include charges for another Pod.
+        An empty or malformed report is not proof of a zero-dollar charge.
+        """
+        pod_id = self._pod_id(pod_id)
+        if (started_at.tzinfo is None or ended_at.tzinfo is None or
+                ended_at <= started_at):
+            raise ProvisioningError("billing requires an ordered timezone-aware lease")
+        start = started_at.astimezone(timezone.utc).replace(minute=0, second=0,
+                                                            microsecond=0)
+        end = ended_at.astimezone(timezone.utc)
+        if end.minute or end.second or end.microsecond:
+            end = end.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        params = {"podId": pod_id, "bucketSize": "hour",
+                  "startTime": start.isoformat().replace("+00:00", "Z"),
+                  "endTime": end.isoformat().replace("+00:00", "Z")}
+        try:
+            response = self.client.get("https://api.runpod.io/v2/billing/pods",
+                                       headers=self._headers(), params=params)
+            response.raise_for_status()
+            body = response.json()
+            records = body["records"]
+            query = body["metadata"]["query"]
+            totals = body["metadata"]["totals"]
+            if (not isinstance(records, list) or not records or
+                    query["podId"] != pod_id or query["bucketSize"] != "hour" or
+                    query["startTime"] != params["startTime"] or
+                    query["endTime"] != params["endTime"] or
+                    body["metadata"]["recordCount"] != len(records)):
+                raise ValueError("incomplete Pod billing report")
+            amounts = {}
+            for key in ("totalAmount", "gpuAmount", "diskAmount", "cpuAmount"):
+                values = [Decimal(str(row[key])) for row in records]
+                total = Decimal(str(totals[key]))
+                if (any(not value.is_finite() or value < 0 for value in values) or
+                        not total.is_finite() or total < 0 or sum(values) != total):
+                    raise ValueError("invalid Pod billing amounts")
+                amounts[key] = total
+            if any(row["podId"] != pod_id for row in records):
+                raise ValueError("mixed Pod billing identities")
+            if (amounts["gpuAmount"] + amounts["diskAmount"] +
+                    amounts["cpuAmount"] > amounts["totalAmount"]):
+                raise ValueError("billing components exceed total")
+            return PodBilling(pod_id, amounts["totalAmount"], amounts["gpuAmount"],
+                              amounts["diskAmount"], amounts["cpuAmount"])
+        except (httpx.HTTPError, ValueError, KeyError, TypeError, InvalidOperation) as exc:
+            raise ProvisioningError("RunPod Pod billing is unavailable or invalid") from exc
 
 
 

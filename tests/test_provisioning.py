@@ -3,6 +3,7 @@
 import os
 import tempfile
 from decimal import Decimal
+from datetime import datetime, timezone
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -102,6 +103,45 @@ class ProvisioningTests(unittest.TestCase):
         with self.assertRaisesRegex(ProvisioningError, "catalog quote exceeds"):
             BoundedProvisioner(adapter).create(request, Decimal("0.75"))
         adapter.create.assert_not_called()
+
+    def test_runpod_billing_validates_pod_specific_provider_totals(self):
+        calls = []
+        def respond(request):
+            calls.append(request)
+            return httpx.Response(200, json={"records": [{"podId": "pod-123",
+                "totalAmount": "0.12", "gpuAmount": "0.10", "diskAmount": "0.02",
+                "cpuAmount": "0"}], "metadata": {"query": {"podId": "pod-123",
+                "bucketSize": "hour", "startTime": "2026-09-24T10:00:00Z",
+                "endTime": "2026-09-24T12:00:00Z"}, "recordCount": 1,
+                "totals": {"totalAmount": "0.12", "gpuAmount": "0.10",
+                           "diskAmount": "0.02", "cpuAmount": "0"}}})
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "test-secret"}):
+            with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+                adapter = RunPodAdapter(LocalSecretResolver(), client=client)
+                bill = adapter.billing("pod-123",
+                    datetime(2026, 9, 24, 10, 7, tzinfo=timezone.utc),
+                    datetime(2026, 9, 24, 11, 2, tzinfo=timezone.utc))
+                self.assertEqual(bill.total_usd, Decimal("0.12"))
+                self.assertEqual(bill.disk_usd, Decimal("0.02"))
+        self.assertEqual(calls[0].url.params["podId"], "pod-123")
+        self.assertEqual(calls[0].url.params["startTime"], "2026-09-24T10:00:00Z")
+        self.assertEqual(calls[0].url.params["endTime"], "2026-09-24T12:00:00Z")
+
+    def test_runpod_billing_rejects_missing_or_cross_pod_records(self):
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "test-secret"}):
+            for records in ([], [{"podId": "other", "totalAmount": 0,
+                                  "gpuAmount": 0, "diskAmount": 0, "cpuAmount": 0}]):
+                body = {"records": records, "metadata": {"query": {"podId": "pod-123",
+                    "bucketSize": "hour", "startTime": "2026-09-24T10:00:00Z",
+                    "endTime": "2026-09-24T12:00:00Z"}, "recordCount": len(records),
+                    "totals": {"totalAmount": 0, "gpuAmount": 0,
+                               "diskAmount": 0, "cpuAmount": 0}}}
+                with httpx.Client(transport=httpx.MockTransport(
+                        lambda _request: httpx.Response(200, json=body))) as client:
+                    with self.assertRaises(ProvisioningError):
+                        RunPodAdapter(LocalSecretResolver(), client=client).billing(
+                            "pod-123", datetime(2026, 9, 24, 10, tzinfo=timezone.utc),
+                            datetime(2026, 9, 24, 11, 2, tzinfo=timezone.utc))
 
     def test_local_env_file_secret_and_missing_key(self):
         with tempfile.TemporaryDirectory() as temp:
