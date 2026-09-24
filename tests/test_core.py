@@ -25,9 +25,10 @@ from connectd.worker import WorkerReport
 from connectd.model_proxy import create_model_proxy
 
 
-PAID_TOKENIZER = {"kind": "tiktoken", "encoding": "cl100k_base",
-                  "message_overhead_tokens": 4, "tool_overhead_tokens": 8,
-                  "safety_margin_tokens": 100}
+PAID_TOKENIZER = {"kind": "tiktoken", "encoding_name": "o200k_base",
+                  "overhead_per_message": 3, "overhead_per_tool": 10,
+                  "safety_margin_tokens": 256}
+PAID_PREFLIGHT = "http://model-engine:8090/v1/chat/completions/input_tokens"
 
 
 class CoreTests(unittest.TestCase):
@@ -409,6 +410,7 @@ class CoreTests(unittest.TestCase):
         registered = client.post("/api/v1/compute/nodes", headers=operator, json={
             "node_id": "paid-local", "provider_type": "metered", "privacy_tier": "local_only",
             "billing_mode": "paid", "endpoint_url": "http://127.0.0.1:8080",
+            "preflight_url": "http://127.0.0.1:8080/v1/chat/completions/input_tokens",
             "model_id": "paid-model", "tokenizer": PAID_TOKENIZER,
             "pricing": {"input_rate_per_1k_tokens": "0.10",
                 "output_rate_per_1k_tokens": "0.20", "max_total_tokens": 1000,
@@ -477,15 +479,17 @@ class CoreTests(unittest.TestCase):
                    "max_total_tokens": 1000, "max_cost_per_request": "0.20"}
         with self.store.connect() as db:
             db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,
-                airgapped,billing_mode,endpoint_url,model_id,pricing_model,tokenizer_json)
-                VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                airgapped,billing_mode,endpoint_url,model_id,pricing_model,tokenizer_json,preflight_url)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 ("paid-model", "vllm", "local_only", True, False, "paid",
                  "http://model-engine:8090", "capable-model", json.dumps(pricing),
-                 json.dumps(PAID_TOKENIZER)))
+                 json.dumps(PAID_TOKENIZER), PAID_PREFLIGHT))
         worker_token = AuthService(self.store, "o" * 40).issue_worker("task-1", "worker-1")
         calls = []
 
         def respond(request):
+            if str(request.url) == PAID_PREFLIGHT:
+                return httpx.Response(200, json={"input_tokens": 100})
             calls.append(request)
             return httpx.Response(200, json={"choices": [],
                 "usage": {"prompt_tokens": 100, "completion_tokens": 50}})
@@ -517,19 +521,21 @@ class CoreTests(unittest.TestCase):
 
         with self.store.connect() as db:
             db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,
-                airgapped,billing_mode,endpoint_url,model_id,pricing_model,tokenizer_json)
-                VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                airgapped,billing_mode,endpoint_url,model_id,pricing_model,tokenizer_json,preflight_url)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 ("paid-loop", "vllm", "local_only", True, False, "paid",
                  "http://model-engine:8090", "capable-model", json.dumps({
                      "input_rate_per_1k_tokens": "0.10",
                      "output_rate_per_1k_tokens": "0.20",
                      "max_total_tokens": 1000, "max_cost_per_request": "0.20"}),
-                 json.dumps(PAID_TOKENIZER)))
+                 json.dumps(PAID_TOKENIZER), PAID_PREFLIGHT))
             db.execute("""INSERT INTO quota_budgets(budget_id,task_id,period,amount_cents,
                 approved_by,created_at) VALUES (?,?,?,?,?,?)""",
                 (str(uuid.uuid4()), "task-1", "daily", 100, "operator", utcnow().isoformat()))
 
         def respond(request):
+            if str(request.url) == PAID_PREFLIGHT:
+                return httpx.Response(200, json={"input_tokens": 100})
             self.assertLess(json.loads(request.content)["max_tokens"], 1000)
             self.assertNotIn("authorization", request.headers)
             return httpx.Response(200, json={"choices": [{"message": {"content": "Done"}}],
@@ -556,20 +562,22 @@ class CoreTests(unittest.TestCase):
 
         with self.store.connect() as db:
             db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,
-                airgapped,billing_mode,endpoint_url,model_id,pricing_model,tokenizer_json)
-                VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                airgapped,billing_mode,endpoint_url,model_id,pricing_model,tokenizer_json,preflight_url)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 ("capped", "vllm", "local_only", True, False, "paid",
                  "http://model-engine:8090", "capable-model", json.dumps({
                      "input_rate_per_1k_tokens": "0.10",
                      "output_rate_per_1k_tokens": "1.00",
                      "max_total_tokens": 1000, "max_cost_per_request": "0.05"}),
-                 json.dumps(PAID_TOKENIZER)))
+                 json.dumps(PAID_TOKENIZER), PAID_PREFLIGHT))
             db.execute("""INSERT INTO quota_budgets(budget_id,task_id,period,amount_cents,
                 approved_by,created_at) VALUES (?,?,?,?,?,?)""",
                 (str(uuid.uuid4()), "task-1", "daily", 100, "operator", utcnow().isoformat()))
         upstream = []
 
         def respond(request):
+            if str(request.url) == PAID_PREFLIGHT:
+                return httpx.Response(200, json={"input_tokens": 100})
             upstream.append(json.loads(request.content))
             return httpx.Response(200, json={"choices": [], "usage": {
                 "prompt_tokens": 100, "completion_tokens": 10}})
@@ -596,19 +604,21 @@ class CoreTests(unittest.TestCase):
 
         with self.store.connect() as db:
             db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,
-                airgapped,billing_mode,endpoint_url,model_id,pricing_model,tokenizer_json)
-                VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                airgapped,billing_mode,endpoint_url,model_id,pricing_model,tokenizer_json,preflight_url)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 ("miscounted", "vllm", "local_only", True, False, "paid",
                  "http://model-engine:8090", "capable-model", json.dumps({
                      "input_rate_per_1k_tokens": "0.10",
                      "output_rate_per_1k_tokens": "0.20",
                      "max_total_tokens": 1000, "max_cost_per_request": "0.20"}),
-                 json.dumps(PAID_TOKENIZER)))
+                 json.dumps(PAID_TOKENIZER), PAID_PREFLIGHT))
             db.execute("""INSERT INTO quota_budgets(budget_id,task_id,period,amount_cents,
                 approved_by,created_at) VALUES (?,?,?,?,?,?)""",
                 (str(uuid.uuid4()), "task-1", "daily", 100, "operator", utcnow().isoformat()))
 
-        def respond(_request):
+        def respond(request):
+            if str(request.url) == PAID_PREFLIGHT:
+                return httpx.Response(200, json={"input_tokens": 100})
             return httpx.Response(200, json={"choices": [], "usage": {
                 "prompt_tokens": 999, "completion_tokens": 1}})
 
@@ -622,6 +632,37 @@ class CoreTests(unittest.TestCase):
         with self.store.connect() as db:
             self.assertFalse(db.execute("SELECT healthy FROM compute_nodes WHERE node_id='miscounted'").fetchone()[0])
             self.assertEqual(db.execute("SELECT status FROM quota_records").fetchone()[0], "reserved")
+
+    def test_paid_model_never_dispatches_without_valid_preflight(self):
+        import httpx
+        from fastapi.testclient import TestClient
+
+        with self.store.connect() as db:
+            db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,
+                airgapped,billing_mode,endpoint_url,model_id,pricing_model,preflight_url)
+                VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                ("unverified", "openai_compatible", "local_only", True, False, "paid",
+                 "http://model-engine:8090", "operator-model", json.dumps({
+                     "input_rate_per_1k_tokens": "0.10",
+                     "output_rate_per_1k_tokens": "0.20",
+                     "max_total_tokens": 1000, "max_cost_per_request": "0.20"}),
+                 PAID_PREFLIGHT))
+        seen = []
+
+        def respond(request):
+            seen.append(str(request.url))
+            return httpx.Response(200, json={"input_tokens": "unknown"})
+
+        client = TestClient(create_model_proxy(ConnectdConfig(), self.store, "o" * 40,
+            client_factory=lambda _tls: httpx.Client(transport=httpx.MockTransport(respond))))
+        token = AuthService(self.store, "o" * 40).issue_worker("task-1", "worker-1")
+        result = client.post("/v1/chat/completions",
+            headers={"Authorization": "Bearer " + token}, json={"model": "operator-model",
+            "messages": [{"role": "user", "content": "hello"}], "max_tokens": 100})
+        self.assertEqual(result.status_code, 503)
+        self.assertEqual(seen, [PAID_PREFLIGHT])
+        with self.store.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM quota_records").fetchone()[0], 0)
 
     def test_legacy_aliases_require_task_and_default_private(self):
         from fastapi.testclient import TestClient
@@ -698,6 +739,30 @@ class CoreTests(unittest.TestCase):
                               "max_total_tokens": 1000,
                               "max_cost_per_request": "0.10"}})
         self.assertEqual(zero_rate.status_code, 422)
+
+    def test_paid_node_accepts_any_model_with_same_origin_preflight(self):
+        from fastapi.testclient import TestClient
+
+        token = "o" * 40
+        client = TestClient(create_app(ConnectdConfig(), self.store,
+                                      Ed25519PrivateKey.generate(), token))
+        headers = {"Authorization": "Bearer " + token}
+        request = {"node_id": "operator-model", "provider_type": "openai_compatible",
+            "privacy_tier": "local_only", "billing_mode": "paid",
+            "endpoint_url": "http://127.0.0.1:8090/v1", "model_id": "operator-chosen-model",
+            "preflight_url": "http://127.0.0.1:8090/v1/chat/completions/input_tokens",
+            "pricing": {"input_rate_per_1k_tokens": "0.10",
+                        "output_rate_per_1k_tokens": "0.20",
+                        "max_total_tokens": 4096, "max_cost_per_request": "0.10"}}
+        wrong = dict(request, preflight_url="https://another-host.example/input_tokens")
+        self.assertEqual(client.post("/api/v1/compute/nodes", headers=headers, json=wrong).status_code, 422)
+        accepted = client.post("/api/v1/compute/nodes", headers=headers, json=request)
+        self.assertEqual(accepted.status_code, 201, accepted.text)
+        with self.store.connect() as db:
+            row = db.execute("SELECT tokenizer_json,preflight_url FROM compute_nodes WHERE node_id=?",
+                             ("operator-model",)).fetchone()
+        self.assertIsNone(row["tokenizer_json"])
+        self.assertEqual(row["preflight_url"], request["preflight_url"])
 
 
 if __name__ == "__main__":

@@ -73,12 +73,20 @@ def create_model_proxy(config: ConnectdConfig, store: Store, operator_token: str
             output_limit = payload.get("max_tokens")
             if not isinstance(output_limit, int) or isinstance(output_limit, bool) or not 0 < output_limit <= quote.max_total_tokens:
                 raise HTTPException(status_code=422, detail="paid inference requires a bounded max_tokens")
+            preflight_url = node["preflight_url"]
             try:
-                prompt_bound = count_prompt_tokens(payload, node["tokenizer_json"])
-                clamped_output, reserved_cents = bounded_model_call(quote, prompt_bound, output_limit)
-            except (TokenizerError, SpendError) as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
-            call_payload["max_tokens"] = clamped_output
+                inference_origin = urlsplit(node["endpoint_url"])
+                preflight_origin = urlsplit(preflight_url) if preflight_url else None
+                valid_preflight = (preflight_origin is not None and
+                    (preflight_origin.scheme, preflight_origin.hostname, preflight_origin.port) ==
+                    (inference_origin.scheme, inference_origin.hostname, inference_origin.port) and
+                    bool(preflight_origin.path) and not preflight_origin.query and
+                    not preflight_origin.fragment and not preflight_origin.username and
+                    not preflight_origin.password)
+            except ValueError:
+                valid_preflight = False
+            if not valid_preflight:
+                raise HTTPException(status_code=503, detail="paid node has no trusted token-count preflight")
         elif node["billing_mode"] != "free":
             raise HTTPException(status_code=503, detail="model node billing mode is invalid")
         is_remote = node["privacy_tier"] != "local_only"
@@ -93,6 +101,25 @@ def create_model_proxy(config: ConnectdConfig, store: Store, operator_token: str
                 context = True
         except (OSError, ssl.SSLError) as exc:
             raise HTTPException(status_code=503, detail="model node TLS bundle cannot be loaded") from exc
+        if quote is not None:
+            try:
+                counter = client_factory(context) if client_factory else httpx.Client(verify=context, timeout=30)
+                with counter:
+                    preflight = counter.post(preflight_url, json=payload)
+                    preflight.raise_for_status()
+                    counted = preflight.json()
+                prompt_bound = counted.get("input_tokens") if isinstance(counted, dict) else None
+                if type(prompt_bound) is not int or prompt_bound < 0:
+                    raise ValueError("invalid preflight token count")
+                if node["tokenizer_json"]:
+                    prompt_bound = max(prompt_bound, count_prompt_tokens(payload, node["tokenizer_json"]))
+            except (httpx.HTTPError, ValueError, OSError, ssl.SSLError, TokenizerError) as exc:
+                raise HTTPException(status_code=503, detail="paid model token preflight failed") from exc
+            try:
+                clamped_output, reserved_cents = bounded_model_call(quote, prompt_bound, output_limit)
+            except SpendError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            call_payload["max_tokens"] = clamped_output
         if quote is not None:
             with store.connect() as db:
                 db.execute("BEGIN IMMEDIATE")

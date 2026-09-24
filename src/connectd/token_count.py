@@ -18,18 +18,18 @@ def _nonnegative_int(value, label: str) -> int:
 def _load(config: dict):
     kind = config.get("kind")
     if kind == "tiktoken":
-        if set(config) != {"kind", "encoding", "message_overhead_tokens",
-                           "tool_overhead_tokens", "safety_margin_tokens"}:
-            raise TokenizerError("tiktoken configuration needs encoding and all overhead fields")
+        if set(config) != {"kind", "encoding_name", "overhead_per_message",
+                           "overhead_per_tool", "safety_margin_tokens"}:
+            raise TokenizerError("tiktoken configuration needs encoding_name and all overhead fields")
         try:
             import tiktoken
-            encoding = tiktoken.get_encoding(config["encoding"])
+            encoding = tiktoken.get_encoding(config["encoding_name"])
         except (ImportError, KeyError, ValueError, TypeError) as exc:
             raise TokenizerError("registered tiktoken encoding is unavailable") from exc
         return lambda value: len(encoding.encode(value, disallowed_special=()))
     if kind == "huggingface_json":
-        if set(config) != {"kind", "path", "sha256", "message_overhead_tokens",
-                           "tool_overhead_tokens", "safety_margin_tokens"}:
+        if set(config) != {"kind", "path", "sha256", "overhead_per_message",
+                           "overhead_per_tool", "safety_margin_tokens"}:
             raise TokenizerError("Hugging Face configuration needs a pinned local tokenizer file")
         try:
             path = Path(config["path"])
@@ -47,7 +47,7 @@ def _load(config: dict):
 def validate_tokenizer(config: dict) -> None:
     if not isinstance(config, dict):
         raise TokenizerError("paid node needs a tokenizer configuration")
-    for key in ("message_overhead_tokens", "tool_overhead_tokens", "safety_margin_tokens"):
+    for key in ("overhead_per_message", "overhead_per_tool", "safety_margin_tokens"):
         _nonnegative_int(config.get(key), key)
     _load(config)("registration check")
 
@@ -69,5 +69,5 @@ def count_prompt_tokens(payload: dict, config: dict | str) -> int:
     encoded = json.dumps({"messages": messages, "tools": tools,
                           "tool_choice": payload.get("tool_choice")},
                          sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return (count(encoded) + len(messages) * config["message_overhead_tokens"] +
-            len(tools) * config["tool_overhead_tokens"] + config["safety_margin_tokens"])
+    return (count(encoded) + len(messages) * config["overhead_per_message"] +
+            len(tools) * config["overhead_per_tool"] + config["safety_margin_tokens"])

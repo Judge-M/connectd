@@ -8,16 +8,26 @@ from connectd.governance import utcnow
 from connectd.store import Store
 
 
-def _validity(valid_until: str | None) -> str:
-    if not valid_until:
-        return "current"
+def _parse_date(value: str | None) -> datetime | None:
+    if value is None:
+        return None
     try:
-        expires = datetime.fromisoformat(valid_until.replace("Z", "+00:00"))
-        if expires.tzinfo is None:
-            return "unknown"
-        return "stale" if expires < utcnow() else "current"
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo is not None else None
     except ValueError:
+        return None
+
+
+def _validity(valid_until: str | None, valid_from: str | None = None) -> str:
+    start, end = _parse_date(valid_from), _parse_date(valid_until)
+    if (valid_from and start is None) or (valid_until and end is None):
         return "unknown"
+    now = utcnow()
+    if start and start > now:
+        return "not_yet_valid"
+    if end and end < now:
+        return "stale"
+    return "current"
 
 
 class MemoryLedger:
@@ -64,12 +74,13 @@ class MemoryLedger:
                 raise ValueError("claim missing or no longer pending")
 
     def recall_records(self, scope: str, *, include_pending: bool = False,
-                       trusted_only: bool = True, max_items: int = 8) -> list[dict]:
+                       trusted_only: bool = True, active_only: bool = False,
+                       max_items: int = 8) -> list[dict]:
         if not 1 <= max_items <= 100:
             raise ValueError("max_items must be in [1,100]")
         with self.store.connect() as db:
-            rows = db.execute("""SELECT * FROM memory_claims WHERE scope=?
-                AND status IN ('pending','promoted') ORDER BY created_at,claim_id""", (scope,)).fetchall()
+            rows = db.execute("""SELECT * FROM memory_claims WHERE scope IN (?,?,?)
+                ORDER BY created_at,claim_id""", (scope, "global", "global:")).fetchall()
             result = []
             for row in rows:
                 claim = dict(row.row._mapping)
@@ -78,17 +89,21 @@ class MemoryLedger:
                     AND (existing_claim_id=? OR new_claim_id=?)""",
                     (claim["claim_id"], claim["claim_id"])).fetchall()
                 contradicted = bool(contradictions)
+                validity = _validity(claim["valid_until"], claim["valid_from"])
+                if claim["superseded_by"]:
+                    validity = "superseded"
                 trusted = bool(claim["is_trusted"] and claim["status"] == "promoted"
                                and not contradicted and not claim["superseded_by"])
                 if trusted_only and not trusted:
                     continue
                 if not include_pending and claim["status"] == "pending":
                     continue
+                if active_only and validity != "current":
+                    continue
                 sources = db.execute("SELECT * FROM claim_provenance WHERE claim_id=? ORDER BY created_at",
                                      (claim["claim_id"],)).fetchall()
                 until = claim["valid_until"]
-                validity = _validity(until)
-                scope_type, _, scope_id = scope.partition(":")
+                scope_type, _, scope_id = claim["scope"].partition(":")
                 result.append({
                     "id": claim["claim_id"], "text": claim["claim_text"],
                     "status": claim["status"], "trusted": trusted,
@@ -108,4 +123,4 @@ class MemoryLedger:
         return result
 
     def recall(self, scope: str) -> list[str]:
-        return [item["text"] for item in self.recall_records(scope)]
+        return [item["text"] for item in self.recall_records(scope, active_only=True)]

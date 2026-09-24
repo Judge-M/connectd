@@ -144,6 +144,7 @@ class NodeCreate(BaseModel):
     client_key_path: str | None = None
     pricing: dict | None = None
     tokenizer: dict | None = None
+    preflight_url: str | None = None
 
 
 class RouteRequest(BaseModel):
@@ -394,17 +395,19 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
             raise HTTPException(status_code=403, detail="wrong task scope")
         if body.profile not in {"full", "worker_brief"}:
             raise HTTPException(status_code=422, detail="unknown recall profile")
-        items = memory.recall_records(body.scope, max_items=body.max_items)
+        items = memory.recall_records(body.scope, active_only=True, max_items=body.max_items)
         if body.profile == "worker_brief":
             items = [{"text": item["text"], "scope": item["scope"],
                       "trusted": item["trusted"]} for item in items]
         return {"query": body.query, "profile": body.profile, "items": items,
                 "warnings": [], "retrieval_mode": "ledger_scope"}
 
+    @app.post("/api/v1/memory/recall")
     @app.post("/recall")
     def legacy_recall(body: RecallRequest, _operator: Annotated[None, Depends(operator)]):
         return {"query": body.query, "profile": "full",
-                "items": memory.recall_records(body.scope, max_items=body.max_items),
+                "items": memory.recall_records(body.scope, include_pending=True,
+                    trusted_only=False, max_items=body.max_items),
                 "warnings": [], "retrieval_mode": "ledger_scope"}
 
     @app.post("/api/v1/memory/claims/{claim_id}/promote")
@@ -446,31 +449,48 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                 raise HTTPException(status_code=422, detail="remote node requires HTTPS and mTLS paths")
         if body.billing_mode == "paid" and not body.pricing:
             raise HTTPException(status_code=422, detail="paid nodes require registry pricing and cap")
-        if body.billing_mode == "paid":
+        if body.billing_mode == "paid" and not body.preflight_url:
+            raise HTTPException(status_code=422, detail="paid nodes require a token-count preflight URL")
+        if body.tokenizer:
             try:
                 from connectd.token_count import validate_tokenizer, TokenizerError
                 validate_tokenizer(body.tokenizer)
             except TokenizerError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if body.preflight_url:
+            if not body.endpoint_url or body.billing_mode != "paid":
+                raise HTTPException(status_code=422, detail="preflight is only for paid inference endpoints")
+            endpoint = urlsplit(body.endpoint_url)
+            preflight = urlsplit(body.preflight_url)
+            try:
+                same_origin = ((preflight.scheme, preflight.hostname, preflight.port) ==
+                               (endpoint.scheme, endpoint.hostname, endpoint.port))
+            except ValueError:
+                same_origin = False
+            if (not same_origin or not preflight.path or preflight.query or preflight.fragment or
+                    preflight.username or preflight.password):
+                raise HTTPException(status_code=422,
+                    detail="preflight URL must share the inference endpoint origin")
         if body.pricing:
             try:
                 from connectd.spend import model_quote
                 model_quote(body.pricing)
             except SpendError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
-        if body.billing_mode == "free" and (body.pricing or body.tokenizer):
-            raise HTTPException(status_code=422, detail="free nodes cannot declare paid pricing or tokenizer")
+        if body.billing_mode == "free" and (body.pricing or body.tokenizer or body.preflight_url):
+            raise HTTPException(status_code=422, detail="free nodes cannot declare paid pricing or preflight")
         with store.connect() as db:
             db.execute("""INSERT INTO compute_nodes(node_id,provider_type,privacy_tier,healthy,airgapped,billing_mode,
                 endpoint_url,model_id,max_context,allowed_privacy_json,ca_cert_path,client_cert_path,client_key_path,
-                pricing_model,tokenizer_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                pricing_model,tokenizer_json,preflight_url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (body.node_id, body.provider_type, body.privacy_tier, True, body.airgapped, body.billing_mode,
                  body.endpoint_url, body.model_id, body.max_context,
                  json.dumps(sorted(item.value for item in body.allowed_privacy_classes))
                  if body.allowed_privacy_classes else None,
                  body.ca_cert_path, body.client_cert_path, body.client_key_path,
                  json.dumps(body.pricing, sort_keys=True) if body.pricing else None,
-                 json.dumps(body.tokenizer, sort_keys=True) if body.tokenizer else None))
+                 json.dumps(body.tokenizer, sort_keys=True) if body.tokenizer else None,
+                 body.preflight_url))
         return {"node_id": body.node_id}
 
     @app.get("/api/v1/compute/nodes/{node_id}")

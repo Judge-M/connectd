@@ -196,6 +196,7 @@ compute_nodes = Table("compute_nodes", metadata,
     Column("client_key_path", Text),
     Column("pricing_model", Text),
     Column("tokenizer_json", Text),
+    Column("preflight_url", Text),
     CheckConstraint("privacy_tier IN ('local_only','private_rented','external')"),
 )
 workload_placements = Table("workload_placements", metadata,

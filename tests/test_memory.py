@@ -21,6 +21,7 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(_validity("2000-01-01T00:00:00Z"), "stale")
         self.assertEqual(_validity("2000-01-01T00:00:00"), "unknown")
         self.assertEqual(_validity("bad-date"), "unknown")
+        self.assertEqual(_validity(None, "2099-01-01T00:00:00Z"), "not_yet_valid")
 
     def test_provenance_validity_and_contradiction_filter(self):
         with tempfile.TemporaryDirectory() as scratch:
@@ -61,6 +62,15 @@ class MemoryTests(unittest.TestCase):
             claim = ledger.capture("repo:connectd", "Grounded fact", "worker", sources=[{
                 "source_uri": "evidence.md", "source_hash": "abc"}])
             ledger.promote(claim, "operator", "verified")
+            stale = ledger.capture("repo:connectd", "Expired fact", "worker",
+                valid_until="2000-01-01T00:00:00Z")
+            old = ledger.capture("repo:connectd", "Superseded fact", "worker")
+            global_claim = ledger.capture("global", "Global fact", "operator")
+            pending = ledger.capture("repo:connectd", "Unreviewed fact", "worker")
+            for identifier in (stale, old, global_claim):
+                ledger.promote(identifier, "operator")
+            with store.connect() as db:
+                db.execute("UPDATE memory_claims SET superseded_by=? WHERE claim_id=?", (claim, old))
             operator_token = "o" * 40
             worker_token = AuthService(store, operator_token).issue_worker(task_id, "worker")
             client = TestClient(create_app(ConnectdConfig(), store,
@@ -68,12 +78,21 @@ class MemoryTests(unittest.TestCase):
             full = client.post("/recall", json={"scope": "repo:connectd"},
                 headers={"Authorization": "Bearer " + operator_token})
             self.assertEqual(full.status_code, 200, full.text)
-            self.assertEqual(full.json()["items"][0]["sources"][0]["source_uri"], "evidence.md")
+            full_items = {item["id"]: item for item in full.json()["items"]}
+            self.assertEqual(full_items[claim]["sources"][0]["source_uri"], "evidence.md")
+            self.assertEqual(full_items[stale]["validity"], "stale")
+            self.assertEqual(full_items[old]["validity"], "superseded")
+            self.assertFalse(full_items[pending]["trusted"])
             brief = client.post(f"/api/v1/tasks/{task_id}/memory/recall",
                 json={"scope": "repo:connectd", "profile": "worker_brief"},
                 headers={"Authorization": "Bearer " + worker_token})
             self.assertEqual(brief.json()["items"], [{"text": "Grounded fact",
-                "scope": {"type": "repo", "id": "connectd"}, "trusted": True}])
+                "scope": {"type": "repo", "id": "connectd"}, "trusted": True},
+                {"text": "Global fact", "scope": {"type": "global", "id": ""},
+                 "trusted": True}])
+            context = client.get(f"/api/v1/tasks/{task_id}/context-pack",
+                headers={"Authorization": "Bearer " + worker_token})
+            self.assertEqual(context.json()["memory"], ["Grounded fact", "Global fact"])
             denied = client.post(f"/api/v1/tasks/{task_id}/memory/recall",
                 json={"scope": "repo:other"},
                 headers={"Authorization": "Bearer " + worker_token})
