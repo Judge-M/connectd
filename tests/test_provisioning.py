@@ -42,6 +42,37 @@ class ProvisioningTests(unittest.TestCase):
         self.assertEqual(calls[0][1], "https://rest.runpod.io/v1/pods")
         self.assertTrue(all(item[2] == "Bearer test-secret" for item in calls))
 
+    def test_runpod_gpu_catalog_quote_is_read_only(self):
+        calls = []
+        def respond(request):
+            calls.append(request)
+            return httpx.Response(200, json={"id": "RTX 4090",
+                "availability": "HIGH", "maxCount": {"secure": 8},
+                "price": {"secure": "0.44"}})
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "test-secret"}):
+            with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+                adapter = RunPodAdapter(LocalSecretResolver(), client=client)
+                result = adapter.quote(PodRequest(name="quoted", gpu_type_id="RTX 4090",
+                    image_name="operator/image", gpu_count=2))
+        self.assertEqual(str(result.gpu_hourly_usd), "0.88")
+        self.assertEqual(result.source, "runpod_gpu_catalog_list_price")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].method, "GET")
+        self.assertEqual(calls[0].url.path, "/v2/catalog/gpus/RTX 4090")
+        self.assertEqual(calls[0].url.params["count"], "2")
+        self.assertEqual(calls[0].url.params["product"], "POD")
+
+    def test_runpod_quote_fails_closed_without_available_pricing(self):
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "test-secret"}):
+            with httpx.Client(transport=httpx.MockTransport(
+                lambda _request: httpx.Response(200, json={"id": "gpu",
+                    "availability": "NONE", "maxCount": {"secure": 8},
+                    "price": {"secure": "0.44"}}))) as client:
+                with self.assertRaises(ProvisioningError):
+                    RunPodAdapter(LocalSecretResolver(), client=client).quote(
+                        PodRequest(name="quoted", gpu_type_id="gpu",
+                                   image_name="operator/image"))
+
     def test_local_env_file_secret_and_missing_key(self):
         with tempfile.TemporaryDirectory() as temp:
             secret = Path(temp) / "connectd.env"

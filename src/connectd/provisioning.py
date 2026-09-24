@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import quote
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -47,7 +48,15 @@ class PodInfo:
     status: str
 
 
+@dataclass(frozen=True)
+class PodQuote:
+    gpu_hourly_usd: Decimal
+    availability: str
+    source: str = "runpod_gpu_catalog_list_price"
+
+
 class ProvisioningAdapter(Protocol):
+    def quote(self, request: PodRequest) -> PodQuote: ...
     def create(self, request: PodRequest) -> PodInfo: ...
     def get(self, pod_id: str) -> PodInfo: ...
     def delete(self, pod_id: str) -> None: ...
@@ -130,6 +139,28 @@ class RunPodAdapter:
             return PodInfo(pod_id, rate, str(value.get("desiredStatus") or "unknown"))
         except (KeyError, TypeError, ValueError, InvalidOperation) as exc:
             raise ProvisioningError("RunPod returned invalid Pod pricing or identity") from exc
+
+    def quote(self, request: PodRequest) -> PodQuote:
+        """Read RunPod's GPU list price; storage and final Pod billing are separate."""
+        url = "https://api.runpod.io/v2/catalog/gpus/" + quote(request.gpu_type_id, safe="")
+        try:
+            response = self.client.get(url, headers=self._headers(),
+                params={"include": "AVAILABILITY", "product": "POD",
+                        "count": request.gpu_count, "cloud": request.cloud_type})
+            response.raise_for_status()
+            value = response.json()
+            cloud = request.cloud_type.lower()
+            if (not isinstance(value, dict) or value.get("id") != request.gpu_type_id or
+                    value.get("availability") not in {"LOW", "MEDIUM", "HIGH"}):
+                raise ValueError("GPU type or availability is invalid")
+            max_count = value["maxCount"][cloud]
+            unit_rate = Decimal(str(value["price"][cloud]))
+            if (type(max_count) is not int or max_count < request.gpu_count or
+                    not unit_rate.is_finite() or unit_rate <= 0):
+                raise ValueError("GPU price or count is invalid")
+            return PodQuote(unit_rate * request.gpu_count, value["availability"])
+        except (httpx.HTTPError, ValueError, KeyError, TypeError, InvalidOperation) as exc:
+            raise ProvisioningError("RunPod GPU list price is unavailable") from exc
 
     def create(self, request: PodRequest) -> PodInfo:
         payload = {
