@@ -62,6 +62,7 @@ class ModelAPISettings(BaseModel):
     engine_type: str = "openai_compatible"
     container_image: str | None = None
     port: int = Field(default=8090, ge=1, le=65535)
+    allowed_local_hosts: set[str] = Field(default_factory=lambda: {"localhost", "127.0.0.1", "model-engine"})
 
 
 class TaskDefaults(BaseModel):

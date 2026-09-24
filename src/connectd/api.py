@@ -388,6 +388,9 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
             parsed = urlsplit(body.endpoint_url)
             if parsed.scheme not in ("http", "https") or not parsed.hostname:
                 raise HTTPException(status_code=422, detail="invalid node endpoint URL")
+            if (body.privacy_tier == "local_only" and
+                    parsed.hostname not in config.model_api.allowed_local_hosts):
+                raise HTTPException(status_code=422, detail="local node endpoint host is not allowed")
         if body.privacy_tier != "local_only":
             if not body.endpoint_url or not body.model_id or not body.allowed_privacy_classes:
                 raise HTTPException(status_code=422, detail="remote node needs endpoint, model, and privacy classes")

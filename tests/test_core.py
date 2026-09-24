@@ -504,6 +504,20 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(next(row for row in tools if row["tool_id"] == "unbound")["status"],
                          "disabled_unbound")
 
+    def test_local_node_cannot_name_external_inference_host(self):
+        from fastapi.testclient import TestClient
+
+        token = "o" * 40
+        client = TestClient(create_app(ConnectdConfig(), self.store,
+                                      Ed25519PrivateKey.generate(), token))
+        response = client.post("/api/v1/compute/nodes",
+                               headers={"Authorization": "Bearer " + token},
+                               json={"node_id": "false-local", "provider_type": "remote",
+                                     "privacy_tier": "local_only", "airgapped": True,
+                                     "billing_mode": "free", "model_id": "capable",
+                                     "endpoint_url": "http://public.example:8090"})
+        self.assertEqual(response.status_code, 422)
+
 
 if __name__ == "__main__":
     unittest.main()

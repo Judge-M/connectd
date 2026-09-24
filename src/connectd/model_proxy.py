@@ -2,6 +2,7 @@
 
 import ssl
 from decimal import Decimal, ROUND_CEILING
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
@@ -47,6 +48,10 @@ def create_model_proxy(config: ConnectdConfig, store: Store, operator_token: str
             node = db.execute("SELECT * FROM compute_nodes WHERE node_id=?", (node_id,)).fetchone()
         if node is None or not node["endpoint_url"] or not node["model_id"]:
             raise HTTPException(status_code=503, detail="selected node has no inference endpoint")
+        node_host = urlsplit(node["endpoint_url"]).hostname
+        if (node["privacy_tier"] == "local_only" and
+                node_host not in config.model_api.allowed_local_hosts):
+            raise HTTPException(status_code=503, detail="local node endpoint host is not allowed")
         if payload.get("model") != node["model_id"]:
             raise HTTPException(status_code=403, detail="model is not registered for selected node")
         if payload.get("stream"):
@@ -61,16 +66,6 @@ def create_model_proxy(config: ConnectdConfig, store: Store, operator_token: str
             output_limit = payload.get("max_tokens", payload.get("max_completion_tokens"))
             if not isinstance(output_limit, int) or isinstance(output_limit, bool) or not 0 < output_limit <= quote.max_total_tokens:
                 raise HTTPException(status_code=422, detail="paid inference requires a bounded max_tokens")
-            with store.connect() as db:
-                db.execute("BEGIN IMMEDIATE")
-                if budget_requires_approval(db, identity.task_id, quote.reserve_cents,
-                                            utcnow(), config.spend.reset_timezone):
-                    raise HTTPException(status_code=403, detail="paid inference requires an operator budget or approval")
-                reservation_id = str(uuid4())
-                db.execute("""INSERT INTO quota_records(record_id,task_id,node_id,source_type,
-                    amount_cents,reserved_cents,status,created_at) VALUES (?,?,?,?,?,?,?,?)""",
-                    (reservation_id, identity.task_id, node_id, "model_inference",
-                     quote.reserve_cents, quote.reserve_cents, "reserved", utcnow().isoformat()))
         elif node["billing_mode"] != "free":
             raise HTTPException(status_code=503, detail="model node billing mode is invalid")
         is_remote = node["privacy_tier"] != "local_only"
@@ -85,6 +80,17 @@ def create_model_proxy(config: ConnectdConfig, store: Store, operator_token: str
                 context = True
         except (OSError, ssl.SSLError) as exc:
             raise HTTPException(status_code=503, detail="model node TLS bundle cannot be loaded") from exc
+        if quote is not None:
+            with store.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                if budget_requires_approval(db, identity.task_id, quote.reserve_cents,
+                                            utcnow(), config.spend.reset_timezone):
+                    raise HTTPException(status_code=403, detail="paid inference requires an operator budget or approval")
+                reservation_id = str(uuid4())
+                db.execute("""INSERT INTO quota_records(record_id,task_id,node_id,source_type,
+                    amount_cents,reserved_cents,status,created_at) VALUES (?,?,?,?,?,?,?,?)""",
+                    (reservation_id, identity.task_id, node_id, "model_inference",
+                     quote.reserve_cents, quote.reserve_cents, "reserved", utcnow().isoformat()))
         target = node["endpoint_url"].rstrip("/")
         if not target.endswith("/v1"):
             target += "/v1"
