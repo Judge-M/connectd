@@ -13,6 +13,7 @@ from connectd.compute import PrivacyClass, PlacementDenied, place
 from connectd.governance import utcnow
 from connectd.config import ConnectdConfig, ComputeSettings, NodeManagerSettings
 from connectd.api import create_app
+from connectd.auth import AuthService
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 from connectd.store import Store
@@ -134,7 +135,9 @@ class NodeMonitorTests(unittest.TestCase):
                 "allowed_privacy_classes": ["public"], "ca_cert_path": "ca.pem",
                 "client_cert_path": "client.pem", "client_key_path": "key.pem",
                 "manager_id": "manager-1"}
-            headers = {"Authorization": "Bearer " + "o" * 40}
+            admin_token = AuthService(store, "o" * 40).issue_operator(
+                "default", "Default admin", "admin")[1]
+            headers = {"Authorization": "Bearer " + admin_token}
             self.assertEqual(client.post("/api/v1/compute/nodes",
                                         json=dict(record, node_id="unapproved"),
                                         headers=headers).status_code, 422)

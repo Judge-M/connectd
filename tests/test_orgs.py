@@ -69,6 +69,8 @@ class OrganizationTests(unittest.TestCase):
                 "endpoint_url": "http://127.0.0.1:8090/v1", "model_id": "model"}
             self.assertEqual(client.post("/api/v1/compute/nodes", headers=operator_a,
                                          json=node_payload).status_code, 403)
+            self.assertEqual(client.post("/api/v1/compute/nodes", headers=bootstrap,
+                                         json=node_payload).status_code, 403)
             self.assertEqual(client.post("/api/v1/compute/nodes", headers=admin_a,
                                          json=node_payload).status_code, 201)
             self.assertEqual([row["node_id"] for row in client.get(
@@ -79,6 +81,8 @@ class OrganizationTests(unittest.TestCase):
                 "domain_path": "test/alpha", "schema": {"type": "object"},
                 "effect_tier": 0}
             self.assertEqual(client.post("/api/v1/tools", headers=operator_a,
+                                         json=tool_payload).status_code, 403)
+            self.assertEqual(client.post("/api/v1/tools", headers=bootstrap,
                                          json=tool_payload).status_code, 403)
             self.assertEqual(client.post("/api/v1/tools", headers=admin_a,
                                          json=tool_payload).status_code, 201)

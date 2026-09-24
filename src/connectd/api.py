@@ -647,6 +647,7 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
 
     @app.post("/api/v1/compute/nodes", status_code=201)
     def register_node(body: NodeCreate, identity: Annotated[OperatorIdentity, Depends(admin)]):
+        require_org_admin(identity, identity.org_id or "")
         if body.privacy_tier not in ("local_only", "private_rented", "external"):
             raise HTTPException(status_code=422, detail="invalid privacy tier")
         from urllib.parse import urlsplit
@@ -764,6 +765,7 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
 
     @app.post("/api/v1/tools", status_code=201)
     def register_tool(body: ToolCreate, identity: Annotated[OperatorIdentity, Depends(admin)]):
+        require_org_admin(identity, identity.org_id or "")
         import json
 
         financial = (body.is_financial or body.provider_tier in {"external_paid", "private_rented"}
@@ -790,11 +792,13 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         return {"tool_id": body.tool_id, "status": "active" if bound else "disabled_unbound"}
 
     @app.get("/api/v1/tools/binding-proposals")
-    def binding_proposals(_operator: Annotated[None, Depends(operator)]):
+    def binding_proposals(identity: Annotated[OperatorIdentity, Depends(admin)]):
         with store.connect() as db:
-            rows = db.execute("""SELECT tool_id,name,domain_path,schema_json,effect_tier,origin
+            rows = db.execute("""SELECT tool_id,owner_org_id,name,domain_path,schema_json,effect_tier,origin
                 FROM tool_registry WHERE origin!='connectd' AND active=FALSE
                 ORDER BY name,tool_id""").fetchall()
+            rows = [row for row in rows if identity.bootstrap or
+                    row["owner_org_id"] == identity.org_id]
         proposals = []
         for row in rows:
             candidate = row["name"] if row["name"] in gateway.handlers else None
@@ -817,14 +821,17 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         return [dict(row.row._mapping) for row in visible]
 
     @app.post("/api/v1/tools/{tool_id}/activate")
-    def activate_tool(tool_id: str, _operator: Annotated[None, Depends(operator)]):
-        if tool_id not in gateway.handlers:
-            raise HTTPException(status_code=409, detail="tool has no reviewed execution handler")
+    def activate_tool(tool_id: str, identity: Annotated[OperatorIdentity, Depends(admin)]):
+        require_org_admin(identity, identity.org_id or "")
         with store.connect() as db:
-            updated = db.execute("""UPDATE tool_registry SET active=TRUE,status='active'
-                WHERE tool_id=? AND active=FALSE""", (tool_id,))
-            if updated.rowcount != 1:
+            row = db.execute("SELECT owner_org_id,active FROM tool_registry WHERE tool_id=?",
+                             (tool_id,)).fetchone()
+            if row is None or row["owner_org_id"] != identity.org_id or row["active"]:
                 raise HTTPException(status_code=404, detail="inactive tool not found")
+            if tool_id not in gateway.handlers:
+                raise HTTPException(status_code=409, detail="tool has no reviewed execution handler")
+            db.execute("""UPDATE tool_registry SET active=TRUE,status='active'
+                WHERE tool_id=? AND active=FALSE""", (tool_id,))
         return {"tool_id": tool_id, "status": "active"}
 
     @app.get("/api/v1/tools/{tool_id}")

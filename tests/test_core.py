@@ -50,6 +50,11 @@ class CoreTests(unittest.TestCase):
         self.store.dispose()
         self.db_path.unlink(missing_ok=True)
 
+    def default_admin_headers(self, bootstrap_token: str) -> dict[str, str]:
+        token = AuthService(self.store, bootstrap_token).issue_operator(
+            "default", "Default admin", "admin")[1]
+        return {"Authorization": "Bearer " + token}
+
     def test_profile_switch_and_default(self):
         config = ConnectdConfig()
         self.assertEqual(config.profile().grant_mode.value, "risk_tiered")
@@ -380,7 +385,7 @@ class CoreTests(unittest.TestCase):
             "title": "Dispatch", "privacy_class": "public", "memory_scope": "repo:test"}).json()["task_id"]
         step_id = client.post(f"/api/v1/tasks/{task_id}/steps", headers=auth,
                               json={"instruction": "Read a file"}).json()["step_id"]
-        client.post("/api/v1/compute/nodes", headers=auth, json={
+        client.post("/api/v1/compute/nodes", headers=self.default_admin_headers(operator_token), json={
             "node_id": "local", "provider_type": "llama", "privacy_tier": "local_only",
             "airgapped": True, "billing_mode": "free", "endpoint_url": "http://127.0.0.1:8080",
             "model_id": "fake"})
@@ -430,7 +435,7 @@ class CoreTests(unittest.TestCase):
             "privacy_class": "public", "memory_scope": "repo:test"}).json()["task_id"]
         step_id = client.post(f"/api/v1/tasks/{task_id}/steps", headers=operator,
                               json={"instruction": "Inspect a file"}).json()["step_id"]
-        client.post("/api/v1/compute/nodes", headers=operator, json={"node_id": "local",
+        client.post("/api/v1/compute/nodes", headers=self.default_admin_headers(token), json={"node_id": "local",
             "provider_type": "vllm", "privacy_tier": "local_only", "airgapped": True,
             "billing_mode": "free", "endpoint_url": "http://127.0.0.1:8080", "model_id": "fake"})
 
@@ -460,7 +465,7 @@ class CoreTests(unittest.TestCase):
             "title": "Paid", "privacy_class": "public", "memory_scope": "repo:test"}).json()["task_id"]
         step_id = client.post(f"/api/v1/tasks/{task_id}/steps", headers=operator,
                               json={"instruction": "Analyze"}).json()["step_id"]
-        registered = client.post("/api/v1/compute/nodes", headers=operator, json={
+        registered = client.post("/api/v1/compute/nodes", headers=self.default_admin_headers(token), json={
             "node_id": "paid-local", "provider_type": "metered", "privacy_tier": "local_only",
             "billing_mode": "paid", "endpoint_url": "http://127.0.0.1:8080",
             "preflight_url": "http://127.0.0.1:8080/v1/chat/completions/input_tokens",
@@ -758,13 +763,15 @@ class CoreTests(unittest.TestCase):
         operator_token = "o" * 40
         client = TestClient(create_app(ConnectdConfig(), self.store,
                                       Ed25519PrivateKey.generate(), operator_token))
-        headers = {"Authorization": "Bearer " + operator_token}
+        headers = self.default_admin_headers(operator_token)
         registered = client.post("/api/v1/tools", headers=headers, json={
             "tool_id": "unbound", "name": "Unbound", "domain_path": "test",
             "schema": {"type": "object"}, "effect_tier": 2})
         self.assertEqual(registered.status_code, 201, registered.text)
         self.assertEqual(registered.json()["status"], "disabled_unbound")
         self.assertEqual(client.post("/api/v1/tools/unbound/activate", headers=headers).status_code, 409)
+        self.assertEqual(client.post("/api/v1/tools/unbound/activate",
+            headers={"Authorization": "Bearer " + operator_token}).status_code, 403)
         tools = client.get("/api/v1/tools", headers=headers).json()
         self.assertEqual(next(row for row in tools if row["tool_id"] == "unbound")["status"],
                          "disabled_unbound")
@@ -795,14 +802,14 @@ class CoreTests(unittest.TestCase):
         client = TestClient(create_app(ConnectdConfig(), self.store,
                                       Ed25519PrivateKey.generate(), token))
         response = client.post("/api/v1/compute/nodes",
-                               headers={"Authorization": "Bearer " + token},
+                               headers=self.default_admin_headers(token),
                                json={"node_id": "false-local", "provider_type": "remote",
                                      "privacy_tier": "local_only", "airgapped": True,
                                      "billing_mode": "free", "model_id": "capable",
                                      "endpoint_url": "http://public.example:8090"})
         self.assertEqual(response.status_code, 422)
         zero_rate = client.post("/api/v1/compute/nodes",
-            headers={"Authorization": "Bearer " + token},
+            headers=self.default_admin_headers(token),
             json={"node_id": "zero-price", "provider_type": "metered",
                   "privacy_tier": "local_only", "billing_mode": "paid",
                   "endpoint_url": "http://127.0.0.1:8090", "model_id": "capable",
@@ -818,7 +825,7 @@ class CoreTests(unittest.TestCase):
         token = "o" * 40
         client = TestClient(create_app(ConnectdConfig(), self.store,
                                       Ed25519PrivateKey.generate(), token))
-        headers = {"Authorization": "Bearer " + token}
+        headers = self.default_admin_headers(token)
         request = {"node_id": "operator-model", "provider_type": "openai_compatible",
             "privacy_tier": "local_only", "billing_mode": "paid",
             "endpoint_url": "http://127.0.0.1:8090/v1", "model_id": "operator-chosen-model",
