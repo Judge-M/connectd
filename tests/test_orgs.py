@@ -80,6 +80,11 @@ class OrganizationTests(unittest.TestCase):
             self.assertEqual([row["tool_id"] for row in client.get(
                 "/api/v1/tools", headers=viewer_a).json()], ["alpha-tool"])
             self.assertEqual(client.get("/api/v1/tools", headers=operator_b).json(), [])
+            shares_path = f"/api/v1/orgs/{org_a}/shares"
+            self.assertEqual(client.get(shares_path, headers=admin_a).json(), [])
+            self.assertEqual(client.get(shares_path, headers=operator_a).status_code, 403)
+            self.assertEqual(client.get(f"/api/v1/orgs/{org_b}/shares",
+                                        headers=admin_a).status_code, 404)
             settings_path = f"/api/v1/orgs/{org_a}/settings"
             self.assertFalse(client.get(settings_path, headers=admin_a).json()[
                 "allow_unquoted_runpod"])

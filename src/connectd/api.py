@@ -281,6 +281,20 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
             raise HTTPException(status_code=404, detail="organization not found")
         return {"org_id": org_id, "allow_unquoted_runpod": body.allow_unquoted_runpod}
 
+    @app.get("/api/v1/orgs/{org_id}/shares")
+    def list_registry_shares(org_id: str,
+                             identity: Annotated[OperatorIdentity, Depends(admin)]):
+        require_org(identity, org_id)
+        with store.connect() as db:
+            if db.execute("SELECT 1 FROM organizations WHERE org_id=?",
+                          (org_id,)).fetchone() is None:
+                raise HTTPException(status_code=404, detail="organization not found")
+            rows = db.execute("""SELECT owner_org_id,target_org_id,resource_kind,
+                resource_id,created_by,created_at FROM registry_shares
+                WHERE owner_org_id=? ORDER BY resource_kind,resource_id,target_org_id""",
+                (org_id,)).fetchall()
+        return [dict(row.row._mapping) for row in rows]
+
     @app.post("/api/v1/orgs/{org_id}/users", status_code=201)
     def create_operator(org_id: str, body: OperatorCreate,
                         identity: Annotated[OperatorIdentity, Depends(admin)]):
