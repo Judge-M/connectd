@@ -26,7 +26,7 @@ from connectd.task import Lease, LeaseError, TaskManager
 from connectd.tools import ToolError, ToolGateway
 from connectd.model import TypedDecisionRouter
 from connectd.router import RouteError
-from connectd.registry_access import visible_to
+from connectd.registry_access import visible_to, grant_share, revoke_share
 from connectd.provisioning import LocalSecretResolver, PodRequest, ProvisioningError, RunPodAdapter
 from connectd.workbench import WORKBENCH_TOOL
 from connectd.governance import utcnow
@@ -46,6 +46,12 @@ class OperatorCreate(BaseModel):
 
 class OrganizationSettingsUpdate(BaseModel):
     allow_unquoted_runpod: bool
+
+
+class ShareCreate(BaseModel):
+    target_org_id: str = Field(min_length=1)
+    resource_kind: Literal["tool", "node"]
+    resource_id: str = Field(min_length=1)
 
 
 class PodQuoteRequest(BaseModel):
@@ -233,6 +239,12 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         if not identity.bootstrap and identity.org_id != org_id:
             raise HTTPException(status_code=404, detail="organization not found")
 
+    def require_org_admin(identity: OperatorIdentity, org_id: str) -> None:
+        if identity.bootstrap:
+            raise HTTPException(status_code=403,
+                                detail="target organization admin token required")
+        require_org(identity, org_id)
+
     def worker(token: Annotated[str, Depends(raw_token)]) -> WorkerIdentity:
         try:
             return auth.require_worker(token)
@@ -280,7 +292,7 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
     @app.put("/api/v1/orgs/{org_id}/settings")
     def update_organization_settings(org_id: str, body: OrganizationSettingsUpdate,
                                      identity: Annotated[OperatorIdentity, Depends(admin)]):
-        require_org(identity, org_id)
+        require_org_admin(identity, org_id)
         with store.connect() as db:
             updated = db.execute("""UPDATE organizations SET allow_unquoted_runpod=?
                 WHERE org_id=?""", (body.allow_unquoted_runpod, org_id))
@@ -322,6 +334,32 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
                 WHERE owner_org_id=? ORDER BY resource_kind,resource_id,target_org_id""",
                 (org_id,)).fetchall()
         return [dict(row.row._mapping) for row in rows]
+
+    @app.post("/api/v1/orgs/{org_id}/shares", status_code=201)
+    def create_registry_share(org_id: str, body: ShareCreate,
+                              identity: Annotated[OperatorIdentity, Depends(admin)]):
+        require_org_admin(identity, org_id)
+        with store.connect() as db:
+            try:
+                grant_share(db, org_id, body.target_org_id, body.resource_kind,
+                            body.resource_id, identity.user_id, utcnow().isoformat())
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"owner_org_id": org_id, **body.model_dump()}
+
+    @app.delete("/api/v1/orgs/{org_id}/shares/{resource_kind}/{resource_id}/{target_org_id}")
+    def delete_registry_share(org_id: str, resource_kind: Literal["tool", "node"],
+                              resource_id: str, target_org_id: str,
+                              identity: Annotated[OperatorIdentity, Depends(admin)]):
+        require_org_admin(identity, org_id)
+        with store.connect() as db:
+            deleted = revoke_share(db, org_id, target_org_id, resource_kind,
+                                   resource_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="share not found")
+        return {"owner_org_id": org_id, "target_org_id": target_org_id,
+                "resource_kind": resource_kind, "resource_id": resource_id,
+                "revoked": True}
 
     @app.post("/api/v1/orgs/{org_id}/users", status_code=201)
     def create_operator(org_id: str, body: OperatorCreate,

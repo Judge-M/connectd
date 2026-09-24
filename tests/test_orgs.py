@@ -90,6 +90,30 @@ class OrganizationTests(unittest.TestCase):
             self.assertEqual(client.get(shares_path, headers=operator_a).status_code, 403)
             self.assertEqual(client.get(f"/api/v1/orgs/{org_b}/shares",
                                         headers=admin_a).status_code, 404)
+            share = {"target_org_id": org_b, "resource_kind": "tool",
+                     "resource_id": "alpha-tool"}
+            self.assertEqual(client.post(shares_path, headers=bootstrap,
+                                         json=share).status_code, 403)
+            self.assertEqual(client.post(shares_path, headers=operator_a,
+                                         json=share).status_code, 403)
+            self.assertEqual(client.post(f"/api/v1/orgs/{org_b}/shares",
+                                         headers=admin_a, json=share).status_code, 404)
+            self.assertEqual(client.post(shares_path, headers=admin_a,
+                json={**share, "resource_id": "missing-tool"}).status_code, 422)
+            self.assertEqual(client.post(shares_path, headers=admin_a,
+                                         json=share).status_code, 201)
+            self.assertEqual([item["tool_id"] for item in client.get(
+                "/api/v1/tools", headers=operator_b).json()], ["alpha-tool"])
+            self.assertEqual(len(client.get(shares_path, headers=admin_a).json()), 1)
+            share_url = (f"{shares_path}/tool/alpha-tool/{org_b}")
+            self.assertEqual(client.delete(share_url, headers=bootstrap).status_code, 403)
+            self.assertEqual(client.delete(share_url, headers=admin_a).status_code, 200)
+            self.assertEqual(client.get("/api/v1/tools", headers=operator_b).json(), [])
+            self.assertEqual(client.post(shares_path, headers=admin_a, json={
+                "target_org_id": org_b, "resource_kind": "node",
+                "resource_id": "*"}).status_code, 201)
+            self.assertEqual([item["node_id"] for item in client.get(
+                "/api/v1/compute/nodes", headers=operator_b).json()], ["alpha-node"])
             quote_path = f"/api/v1/orgs/{org_a}/provisioning/runpod/quote"
             quote_payload = {"gpu_type_id": "GPU", "gpu_count": 2,
                              "cloud_type": "SECURE"}
@@ -109,6 +133,8 @@ class OrganizationTests(unittest.TestCase):
             self.assertFalse(client.get(settings_path, headers=admin_a).json()[
                 "allow_unquoted_runpod"])
             self.assertEqual(client.put(settings_path, headers=operator_a,
+                                        json={"allow_unquoted_runpod": True}).status_code, 403)
+            self.assertEqual(client.put(settings_path, headers=bootstrap,
                                         json={"allow_unquoted_runpod": True}).status_code, 403)
             self.assertEqual(client.put(settings_path, headers=admin_a,
                                         json={"allow_unquoted_runpod": True}).status_code, 200)
