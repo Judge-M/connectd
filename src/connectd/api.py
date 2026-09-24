@@ -611,6 +611,14 @@ def create_app(config: ConnectdConfig, store: Store, signing_key: Ed25519Private
         except ToolError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 
+    @app.post("/decisions/{decision_id}/outcome")
+    def legacy_outcome(decision_id: str,
+                       _identity: Annotated[WorkerIdentity, Depends(worker)]):
+        raise HTTPException(status_code=409, detail={
+            "error": "gateway_execution_required",
+            "message": "Off-gateway execution cannot be verified or recorded as a connectd tool outcome."
+        })
+
     @app.post("/api/v1/tools/invoke")
     def invoke_tool(body: ToolInvoke, identity: Annotated[WorkerIdentity, Depends(worker)]):
         if identity.task_id != body.task_id:

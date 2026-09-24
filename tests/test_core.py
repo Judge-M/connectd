@@ -565,6 +565,8 @@ class CoreTests(unittest.TestCase):
                                      "context": {"task_id": task_id}})
         self.assertEqual(response.status_code, 201, response.text)
         self.assertTrue(response.json()["execution"]["gateway_required"])
+        self.assertEqual(client.post("/decisions/legacy-decision/outcome", headers=worker,
+                                     json={"outcome": "success"}).status_code, 409)
         with self.store.connect() as db:
             db.execute("""INSERT INTO tool_registry(tool_id,name,domain_path,schema_json,
                 effect_tier,active) VALUES (?,?,?,?,?,TRUE)""",
