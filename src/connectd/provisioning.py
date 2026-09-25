@@ -306,12 +306,12 @@ class BoundedProvisioner:
         if gpu_quote is not None and gpu_quote.gpu_hourly_usd > max_hourly_usd:
             raise ProvisioningError("GPU catalog quote exceeds the operator hourly cap")
         pod = self.adapter.create(request)
-        if pod.hourly_usd > max_hourly_usd:
+        if pod.hourly_usd <= 0 or pod.hourly_usd > max_hourly_usd:
             try:
                 self.adapter.delete(pod.pod_id)
             except ProvisioningError as exc:
                 raise ProvisioningError(
-                    f"Pod {pod.pod_id} exceeds the hourly cap and automatic deletion failed"
+                    f"Pod {pod.pod_id} has no valid admitted rate and automatic deletion failed"
                 ) from exc
-            raise ProvisioningError("created Pod rate exceeds the operator hourly cap")
+            raise ProvisioningError("created Pod rate is missing or exceeds the operator hourly cap")
         return pod

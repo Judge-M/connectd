@@ -134,6 +134,15 @@ class ProvisioningTests(unittest.TestCase):
             BoundedProvisioner(adapter).create(request, Decimal("0.75"))
         adapter.create.assert_not_called()
 
+    def test_bounded_provisioner_deletes_pod_without_positive_post_create_rate(self):
+        request = PodRequest(name="model", gpu_type_id="gpu", image_name="image")
+        adapter = Mock()
+        adapter.quote.return_value = PodQuote(Decimal("0.50"), "HIGH")
+        adapter.create.return_value = PodInfo("pod-unpriced", Decimal("0"), "CREATED")
+        with self.assertRaisesRegex(ProvisioningError, "rate is missing"):
+            BoundedProvisioner(adapter).create(request, Decimal("0.75"))
+        adapter.delete.assert_called_once_with("pod-unpriced")
+
     def test_runpod_billing_validates_pod_specific_provider_totals(self):
         calls = []
         def respond(request):
