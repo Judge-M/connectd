@@ -43,6 +43,7 @@ class MemoryMigrationTests(unittest.TestCase):
                 db.execute("SELECT handler_id FROM tool_registry LIMIT 1").fetchone()
                 db.execute("SELECT admin_id FROM daemon_admins LIMIT 1").fetchone()
                 db.execute("SELECT job_id FROM memory_evaluation_jobs LIMIT 1").fetchone()
+                db.execute("SELECT lease_id FROM pod_leases LIMIT 1").fetchone()
             self.assertEqual(org["memory_authority"], "hybrid")
             self.assertFalse(org["allow_remote_librarian"])
             self.assertIsNone(claim["task_id"])
