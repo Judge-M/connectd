@@ -30,6 +30,7 @@ compute:
   node_managers: []
 provisioning:
   runpod_secret_file: null  # Optional local env file containing RUNPOD_API_KEY.
+  enable_paid_runpod_leases: false  # REST v2 has no verified provider termination deadline.
 memory:
   evaluator:
     type: "fail_closed"  # Set http_json and endpoint_url to enable independent review.

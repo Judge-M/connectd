@@ -125,6 +125,13 @@ class ProvisioningSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     runpod_secret_file: Path | None = None
+    enable_paid_runpod_leases: bool = False
+
+    @model_validator(mode="after")
+    def require_provider_deadline(self):
+        if self.enable_paid_runpod_leases:
+            raise ValueError("paid RunPod leases require a verified provider termination deadline, unavailable in REST v2")
+        return self
 
 
 class LibrarianSettings(BaseModel):

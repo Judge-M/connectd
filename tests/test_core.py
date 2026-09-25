@@ -64,6 +64,9 @@ class CoreTests(unittest.TestCase):
             ConnectdConfig(default_execution_profile="missing")
         loaded = load_config(Path(__file__).parents[1] / "config" / "connectd.yaml")
         self.assertEqual(loaded.profile("prod_secure").worker_runtime.value, "docker")
+        self.assertFalse(loaded.provisioning.enable_paid_runpod_leases)
+        with self.assertRaisesRegex(ValueError, "verified provider termination deadline"):
+            ConnectdConfig(provisioning={"enable_paid_runpod_leases": True})
         profiles = config.execution_profiles.copy()
         profiles["prod_secure"] = profiles["prod_secure"].model_copy(
             update={"worker_runtime": "subprocess"})
