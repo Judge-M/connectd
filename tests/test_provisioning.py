@@ -1,5 +1,6 @@
 """RunPod transport remains separate from inference and resolves keys at call time."""
 
+import json
 import os
 import tempfile
 from decimal import Decimal
@@ -23,11 +24,11 @@ class ProvisioningTests(unittest.TestCase):
             calls.append((request.method, str(request.url),
                           request.headers.get("Authorization")))
             if request.method == "POST":
-                return httpx.Response(201, json={"id": "pod-123", "costPerHr": "0.74",
-                                                  "desiredStatus": "RUNNING"})
+                return httpx.Response(201, json={"id": "pod-123", "cost": "0.74",
+                                                  "status": "RUNNING"})
             if request.method == "GET":
-                return httpx.Response(200, json={"id": "pod-123", "costPerHr": "0.74",
-                                                  "desiredStatus": "RUNNING"})
+                return httpx.Response(200, json={"id": "pod-123", "cost": "0.74",
+                                                  "status": "RUNNING"})
             return httpx.Response(204)
         with patch.dict(os.environ, {"RUNPOD_API_KEY": "test-secret"}):
             with httpx.Client(transport=httpx.MockTransport(respond)) as client:
@@ -42,8 +43,37 @@ class ProvisioningTests(unittest.TestCase):
                 with self.assertRaises(ProvisioningError):
                     adapter.delete("../another-pod")
         self.assertEqual([item[0] for item in calls], ["POST", "GET", "DELETE"])
-        self.assertEqual(calls[0][1], "https://rest.runpod.io/v1/pods")
+        self.assertEqual(calls[0][1], "https://api.runpod.io/v2/pods")
         self.assertTrue(all(item[2] == "Bearer test-secret" for item in calls))
+
+    def test_v2_create_shape_and_paginated_name_recovery(self):
+        calls = []
+        def respond(request):
+            calls.append(request)
+            if request.method == "POST":
+                return httpx.Response(201, json={"id": "pod-a", "cost": 0.7,
+                                                   "status": "RUNNING"})
+            cursor = request.url.params.get("cursor")
+            if not cursor:
+                return httpx.Response(200, json={"pods": [], "pagination": {
+                    "hasNextPage": True, "nextCursor": "page-two"}})
+            return httpx.Response(200, json={"pods": [
+                {"id": "pod-a", "name": "connectd-lease", "cost": 0.7,
+                 "status": "RUNNING"}], "pagination": {
+                    "hasNextPage": False, "nextCursor": None}})
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "test-secret"}):
+            with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+                adapter = RunPodAdapter(LocalSecretResolver(), client=client)
+                request = PodRequest(name="connectd-lease", gpu_type_id="gpu",
+                                     image_name="image", volume_gb=20)
+                adapter.create(request)
+                self.assertEqual(adapter.find_by_name("connectd-lease")[0].pod_id,
+                                 "pod-a")
+        body = json.loads(calls[0].content)
+        self.assertEqual(body["gpu"], {"id": "gpu", "count": 1})
+        self.assertEqual(body["mounts"], {"persistent": {"size": 20,
+                                                          "path": "/workspace"}})
+        self.assertEqual(calls[2].url.params["cursor"], "page-two")
 
     def test_runpod_gpu_catalog_quote_is_read_only(self):
         calls = []

@@ -36,6 +36,8 @@ class PodRequest(BaseModel):
     def valid_options(self):
         if self.cloud_type not in {"SECURE", "COMMUNITY"}:
             raise ValueError("invalid RunPod cloud type")
+        if 0 < self.volume_gb < 10:
+            raise ValueError("persistent volume must be at least 10 GB")
         if len(self.ports) > 16 or any(not re.fullmatch(r"[1-9][0-9]{0,4}/(http|tcp)", item)
                                       for item in self.ports):
             raise ValueError("invalid Pod ports")
@@ -69,6 +71,7 @@ class ProvisioningAdapter(Protocol):
     def quote(self, request: PodRequest) -> PodQuote: ...
     def create(self, request: PodRequest) -> PodInfo: ...
     def get(self, pod_id: str) -> PodInfo: ...
+    def find_by_name(self, name: str) -> list[PodInfo]: ...
     def delete(self, pod_id: str) -> None: ...
     def billing(self, pod_id: str, started_at: datetime, ended_at: datetime) -> PodBilling: ...
 
@@ -110,9 +113,9 @@ class LocalSecretResolver:
 
 
 class RunPodAdapter:
-    """RunPod's documented REST v1 Pod create, read, and delete operations."""
+    """RunPod's documented REST v2 Pod lifecycle and catalog operations."""
 
-    base_url = "https://rest.runpod.io/v1"
+    base_url = "https://api.runpod.io/v2"
 
     def __init__(self, resolver: LocalSecretResolver, *, api_key_env: str = "RUNPOD_API_KEY",
                  client: httpx.Client | None = None):
@@ -144,10 +147,10 @@ class RunPodAdapter:
             raise ProvisioningError("RunPod returned invalid Pod data")
         try:
             pod_id = cls._pod_id(value["id"])
-            rate = Decimal(str(value["costPerHr"]))
+            rate = Decimal(str(value["cost"]))
             if not rate.is_finite() or rate < 0:
                 raise ValueError("invalid hourly cost")
-            return PodInfo(pod_id, rate, str(value.get("desiredStatus") or "unknown"))
+            return PodInfo(pod_id, rate, str(value["status"]))
         except (KeyError, TypeError, ValueError, InvalidOperation) as exc:
             raise ProvisioningError("RunPod returned invalid Pod pricing or identity") from exc
 
@@ -176,15 +179,15 @@ class RunPodAdapter:
     def create(self, request: PodRequest) -> PodInfo:
         payload = {
             "name": request.name,
-            "gpuTypeIds": [request.gpu_type_id],
-            "gpuCount": request.gpu_count,
-            "imageName": request.image_name,
-            "containerDiskInGb": request.container_disk_gb,
-            "volumeInGb": request.volume_gb,
+            "gpu": {"id": request.gpu_type_id, "count": request.gpu_count},
+            "image": request.image_name,
+            "disk": request.container_disk_gb,
             "ports": request.ports,
-            "cloudType": request.cloud_type,
-            "computeType": "GPU",
+            "cloud": request.cloud_type,
         }
+        if request.volume_gb:
+            payload["mounts"] = {"persistent": {"size": request.volume_gb,
+                                                   "path": "/workspace"}}
         response = self._request("POST", "/pods", json=payload)
         try:
             return self._info(response.json())
@@ -197,6 +200,35 @@ class RunPodAdapter:
             return self._info(response.json())
         except ValueError as exc:
             raise ProvisioningError("RunPod returned invalid Pod JSON") from exc
+
+    def find_by_name(self, name: str) -> list[PodInfo]:
+        """Recover Pod identity after an interrupted create response."""
+        if not name or len(name) > 120:
+            raise ProvisioningError("invalid Pod name")
+        matches = []
+        cursor = None
+        seen = set()
+        while True:
+            response = self._request("GET", "/pods", params={"cursor": cursor} if cursor else {})
+            try:
+                body = response.json()
+                pods = body["pods"]
+                pagination = body["pagination"]
+                if not isinstance(pods, list) or not isinstance(pagination["hasNextPage"], bool):
+                    raise ValueError("invalid Pod list")
+                for item in pods:
+                    if not isinstance(item, dict):
+                        raise ValueError("invalid Pod entry")
+                    if item.get("name") == name:
+                        matches.append(self._info(item))
+                if not pagination["hasNextPage"]:
+                    return matches
+                cursor = pagination["nextCursor"]
+                if not isinstance(cursor, str) or not cursor or cursor in seen:
+                    raise ValueError("invalid Pod cursor")
+                seen.add(cursor)
+            except (ValueError, TypeError, KeyError, AttributeError) as exc:
+                raise ProvisioningError("RunPod returned invalid Pod list") from exc
 
     def delete(self, pod_id: str) -> None:
         self._request("DELETE", "/pods/" + self._pod_id(pod_id))
